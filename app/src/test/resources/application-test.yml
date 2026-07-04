@@ -1,0 +1,23 @@
+# ==============================================================================
+# RAG 检索评测专用配置 (spring.profiles.active=test)
+#
+# 使用场景: 本地 IDE 跑评测测试类，不启 Web 服务器，
+#           直连 Docker 里的 PostgreSQL/Redis/MinIO
+#
+# 前提: docker compose stop app (只关后端，保留中间件)
+# ==============================================================================
+
+spring:
+  main:
+    # 禁用 Web 服务器 (Tomcat)，不占用端口，避免和 Docker 后端容器冲突
+    web-application-type: none
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/interview_guide
+    username: postgres
+    password: password
+
+  jpa:
+    hibernate:
+      # 评测不能重建表！使用已有向量数据
+      ddl-auto: validate
