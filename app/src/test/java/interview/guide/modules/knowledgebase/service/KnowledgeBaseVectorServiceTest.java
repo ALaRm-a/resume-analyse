@@ -31,9 +31,9 @@ import static org.mockito.Mockito.*;
  *   <li>删除向量数据（deleteByKnowledgeBaseId）</li>
  * </ul>
  *
- * <p>注意：TextSplitter 未被 Mock，测试依赖 TokenTextSplitter 的真实行为。
+ * <p>注意：RecursiveCharacterSplitter 未被 Mock，测试依赖其真实拆分行为。
  * 这是有意为之，因为分词逻辑是向量化的核心部分，应该进行集成测试。
- * 如需完全隔离，可将 TextSplitter 改为构造函数注入。
+ * 如需完全隔离，可将 RecursiveCharacterSplitter 改为构造函数注入。
  */
 @DisplayName("知识库向量服务测试")
 @SuppressWarnings("unchecked") // Mockito ArgumentCaptor 泛型警告
@@ -56,8 +56,8 @@ class KnowledgeBaseVectorServiceTest {
     // ==================== 共享辅助方法 ====================
 
     /**
-     * 生成足够长的内容，确保 TokenTextSplitter 产生 chunks
-     * TokenTextSplitter 默认配置下，需要较长的文本才会分块
+     * 生成足够长的内容，确保 RecursiveCharacterSplitter 产生 chunks
+     * 每个段落以 \\n\\n 分隔，会被作为段落边界进行递归拆分
      */
     private String generateLongContent(int paragraphs) {
         StringBuilder contentBuilder = new StringBuilder();

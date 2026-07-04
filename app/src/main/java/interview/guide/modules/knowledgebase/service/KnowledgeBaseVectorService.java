@@ -1,11 +1,7 @@
 package interview.guide.modules.knowledgebase.service;
 
-import com.knuddels.jtokkit.Encodings;
-import com.knuddels.jtokkit.api.Encoding;
-import com.knuddels.jtokkit.api.EncodingRegistry;
-import com.knuddels.jtokkit.api.EncodingType;
-import com.knuddels.jtokkit.api.IntArrayList;
 import interview.guide.modules.knowledgebase.repository.VectorRepository;
+import interview.guide.modules.knowledgebase.util.RecursiveCharacterSplitter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
@@ -13,7 +9,6 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
@@ -32,30 +27,28 @@ public class KnowledgeBaseVectorService {
     private static final int MAX_BATCH_SIZE = 10;
 
     /**
-     * 每个chunk的目标token数（使用CL100K_BASE编码器，与OpenAI Embedding一致）
+     * 每个chunk的目标字符数（约等价于原 300 token）
      */
-    private static final int CHUNK_SIZE_TOKENS = 300;
+    static final int CHUNK_SIZE_CHARS = 500;
 
     /**
-     * 相邻chunk之间的重叠token数，防止语义在切分边界处中断
+     * 相邻chunk之间的重叠字符数，防止语义在切分边界处中断
      */
-    private static final int CHUNK_OVERLAP_TOKENS = 50;
+    static final int CHUNK_OVERLAP_CHARS = 50;
 
     /**
      * 单次拆分允许生成的最大chunk数（防止无限制循环）
      */
-    private static final int MAX_NUM_CHUNKS = 10000;
+    static final int MAX_NUM_CHUNKS = 10000;
 
     private final VectorStore vectorStore;
-    private final Encoding encoding;
     private final VectorRepository vectorRepository;
+    private final RecursiveCharacterSplitter splitter;
 
     public KnowledgeBaseVectorService(VectorStore vectorStore, VectorRepository vectorRepository) {
         this.vectorStore = vectorStore;
         this.vectorRepository = vectorRepository;
-        // 使用与TokenTextSplitter相同的CL100K_BASE编码器
-        EncodingRegistry registry = Encodings.newDefaultEncodingRegistry();
-        this.encoding = registry.getEncoding(EncodingType.CL100K_BASE);
+        this.splitter = new RecursiveCharacterSplitter(CHUNK_SIZE_CHARS, CHUNK_OVERLAP_CHARS, MAX_NUM_CHUNKS);
     }
     /**
      * 将知识库内容向量化并存储
@@ -69,11 +62,14 @@ public class KnowledgeBaseVectorService {
             // 1. 先删除该知识库的旧向量数据
             deleteByKnowledgeBaseId(knowledgeBaseId);
             
-            // 2. 滑动窗口分块（chunkSize=300 tokens，overlap=50 tokens，防止语义切分中断）
-            List<Document> chunks = splitWithOverlap(content);
+            // 2. 递归字符拆分（chunkSize=500字符，overlap=50字符，保持语义完整性）
+            List<String> splitTexts = splitter.split(content);
+            List<Document> chunks = splitTexts.stream()
+                    .map(Document::new)
+                    .collect(Collectors.toList());
 
-            log.info("文本分块完成: {} 个chunks (chunkSize={}tokens, overlap={}tokens)",
-                    chunks.size(), CHUNK_SIZE_TOKENS, CHUNK_OVERLAP_TOKENS);
+            log.info("文本分块完成: {} 个chunks (chunkSize={}字符, overlap={}字符)",
+                    chunks.size(), CHUNK_SIZE_CHARS, CHUNK_OVERLAP_CHARS);
             
             // 3. 为每个chunk添加metadata（知识库ID）
             // 统一使用 String 类型存储，确保查询一致性
@@ -97,37 +93,6 @@ public class KnowledgeBaseVectorService {
             throw new RuntimeException("向量化知识库失败: " + e.getMessage(), e);
         }
     }
-    
-    /**
-     * 滑动窗口分块：使用CL100K_BASE编码器对文本做重叠滑动窗口切分
-     * <p>
-     * 窗口大小=CHUNK_SIZE_TOKENS，每次滑动步长=stride(chunkSize - overlap)，
-     * 保证相邻chunk之间有overlap个token的重叠，防止语义在切分边界处断裂。
-     * </p>
-     *
-     * @param content 原始文本
-     * @return 重叠分块后的Document列表
-     */
-    private List<Document> splitWithOverlap(String content) {
-        IntArrayList tokens = encoding.encode(content);
-        int stride = CHUNK_SIZE_TOKENS - CHUNK_OVERLAP_TOKENS; // 250
-
-        List<Document> chunks = new ArrayList<>();
-        int start = 0;
-        while (start < tokens.size() && chunks.size() < MAX_NUM_CHUNKS) {
-            int end = Math.min(start + CHUNK_SIZE_TOKENS, tokens.size());
-            // 将 [start, end) 范围的 token 拷贝到新的 IntArrayList
-            IntArrayList subTokens = new IntArrayList(end - start);
-            for (int i = start; i < end; i++) {
-                subTokens.add(tokens.get(i));
-            }
-            String chunkText = encoding.decode(subTokens);
-            chunks.add(new Document(chunkText));
-            start += stride;
-        }
-        return chunks;
-    }
-
     /**
      * 基于多个知识库进行相似度搜索
      * 
