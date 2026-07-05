@@ -1,5 +1,6 @@
 package interview.guide.modules.knowledgebase.service;
 
+import interview.guide.modules.knowledgebase.bm25.BM25IndexService;
 import interview.guide.modules.knowledgebase.repository.VectorRepository;
 import interview.guide.modules.knowledgebase.util.RecursiveCharacterSplitter;
 import lombok.extern.slf4j.Slf4j;
@@ -9,8 +10,11 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
@@ -43,11 +47,15 @@ public class KnowledgeBaseVectorService {
 
     private final VectorStore vectorStore;
     private final VectorRepository vectorRepository;
+    private final BM25IndexService bm25IndexService;
     private final RecursiveCharacterSplitter splitter;
 
-    public KnowledgeBaseVectorService(VectorStore vectorStore, VectorRepository vectorRepository) {
+    public KnowledgeBaseVectorService(VectorStore vectorStore,
+                                       VectorRepository vectorRepository,
+                                       BM25IndexService bm25IndexService) {
         this.vectorStore = vectorStore;
         this.vectorRepository = vectorRepository;
+        this.bm25IndexService = bm25IndexService;
         this.splitter = new RecursiveCharacterSplitter(CHUNK_SIZE_CHARS, CHUNK_OVERLAP_CHARS, MAX_NUM_CHUNKS);
     }
     /**
@@ -62,19 +70,35 @@ public class KnowledgeBaseVectorService {
             // 1. 先删除该知识库的旧向量数据
             deleteByKnowledgeBaseId(knowledgeBaseId);
             
-            // 2. 递归字符拆分（chunkSize=500字符，overlap=50字符，保持语义完整性）
+            // 2. 递归字符拆分 + 预分配 UUID + metadata（一步到位）
+            // Document 没有 setId()，只能通过 Builder 创建时就带上 id，
+            // 确保 BM25 索引和向量数据共用同一个 chunk_id
             List<String> splitTexts = splitter.split(content);
             List<Document> chunks = splitTexts.stream()
-                    .map(Document::new)
+                    .map(text -> {
+                        Map<String, Object> metadata = new HashMap<>();
+                        metadata.put("kb_id", knowledgeBaseId.toString());
+                        return Document.builder()
+                                .id(UUID.randomUUID().toString())
+                                .text(text)
+                                .metadata(metadata)
+                                .build();
+                    })
                     .collect(Collectors.toList());
 
             log.info("文本分块完成: {} 个chunks (chunkSize={}字符, overlap={}字符)",
                     chunks.size(), CHUNK_SIZE_CHARS, CHUNK_OVERLAP_CHARS);
-            
-            // 3. 为每个chunk添加metadata（知识库ID）
-            // 统一使用 String 类型存储，确保查询一致性
-            chunks.forEach(chunk -> chunk.getMetadata().put("kb_id", knowledgeBaseId.toString()));
-            // 4. 分批向量化并存储（阿里云 DashScope API 限制 batch size <= 10）
+
+            // 4. 构建 BM25 倒排索引（基于已分配 UUID 的 chunk）
+            try {
+                bm25IndexService.indexChunks(knowledgeBaseId, chunks);
+            } catch (Exception e) {
+                log.error("BM25 索引构建失败，不影响向量化继续: kbId={}, error={}",
+                    knowledgeBaseId, e.getMessage(), e);
+                // BM25 失败不阻塞向量化——降级运行，后续可补建
+            }
+
+            // 5. 分批向量化并存储（阿里云 DashScope API 限制 batch size <= 10）
             int totalChunks = chunks.size();
             int batchCount = (totalChunks + MAX_BATCH_SIZE - 1) / MAX_BATCH_SIZE; // 向上取整
             log.info("开始分批向量化: 总共 {} 个chunks，分 {} 批处理，每批最多 {} 个",
@@ -190,20 +214,24 @@ public class KnowledgeBaseVectorService {
     }
     
     /**
-     * 删除指定知识库的所有向量数据
-     * 委托给 VectorRepository 处理
+     * 删除指定知识库的所有向量数据和 BM25 索引
      * 
      * @param knowledgeBaseId 知识库ID
      */
     @Transactional(rollbackFor = Exception.class)
     public void deleteByKnowledgeBaseId(Long knowledgeBaseId) {
+        // 1. 删除向量数据
         try {
             vectorRepository.deleteByKnowledgeBaseId(knowledgeBaseId);
         } catch (Exception e) {
             log.error("删除向量数据失败: kbId={}, error={}", knowledgeBaseId, e.getMessage(), e);
-            // 不抛出异常，允许继续执行其他删除操作
-            // 如果确实需要严格保证，可以取消下面的注释
-            // throw new RuntimeException("删除向量数据失败: " + e.getMessage(), e);
+        }
+
+        // 2. 删除 BM25 索引数据（df 同步扣减 + kb_stats 清理）
+        try {
+            bm25IndexService.deleteAllByKbId(knowledgeBaseId);
+        } catch (Exception e) {
+            log.error("删除 BM25 索引失败: kbId={}, error={}", knowledgeBaseId, e.getMessage(), e);
         }
     }
 }
