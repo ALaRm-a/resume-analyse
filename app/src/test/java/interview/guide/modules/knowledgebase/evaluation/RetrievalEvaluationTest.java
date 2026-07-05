@@ -21,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <ul>
  *   <li>Docker 中间件已启动: postgres(5432), redis(6379), minio(9000)</li>
  *   <li>Docker 后端容器已停止: docker compose stop app</li>
- *   <li>知识库 ID=1 已上传 CAS无锁实现并发安全.md 并完成向量化</li>
+ *   <li>知识库 ID=1 已上传 CAS无锁实现并发安全.md（递归字符拆分），向量化完成</li>
  *   <li>环境变量 AI_BAILIAN_API_KEY 已设置</li>
  * </ul>
  */
@@ -38,55 +38,56 @@ class RetrievalEvaluationTest {
     private KnowledgeBaseVectorService vectorService;
 
     // ==================== 20 条测试用例 ====================
+    // 递归字符拆分策略的 chunk ID
     private static final List<TestCase> TEST_CASES = List.of(
         tc("Q1", "CAS的全称是什么？它的核心思路是什么？",
-            "53ab4859-c325-4fa1-becc-a9d3bfe48b2d"),
+            "63d36f30-f60b-4935-af13-bbfeaa1b95f5"),
         tc("Q2", "CAS为什么是无锁的？它不会阻塞线程的原因是什么？",
-            "53ab4859-c325-4fa1-becc-a9d3bfe48b2d"),
+            "63d36f30-f60b-4935-af13-bbfeaa1b95f5"),
         tc("Q3", "CAS和synchronized的区别是什么？",
-            "53ab4859-c325-4fa1-becc-a9d3bfe48b2d",
-            "0e05bf98-1074-410b-8de2-c98b90ffd4cf"),
+            "63d36f30-f60b-4935-af13-bbfeaa1b95f5",
+            "b31660e5-1327-4003-902f-1219dcc4c95d"),
         tc("Q4", "AtomicInteger的updateAndSet方法接收什么类型的参数？",
-            "0e05bf98-1074-410b-8de2-c98b90ffd4cf"),
+            "b31660e5-1327-4003-902f-1219dcc4c95d"),
         tc("Q5", "AtomicReference为什么只能维护不可变类？",
-            "0e05bf98-1074-410b-8de2-c98b90ffd4cf",
-            "49aeddbc-f1cc-4004-a8f7-f18ef66cc755"),
+            "b31660e5-1327-4003-902f-1219dcc4c95d",
+            "75a4e97f-651d-49eb-8fe4-aa58a88cf527"),
         tc("Q6", "什么是ABA问题？",
-            "49aeddbc-f1cc-4004-a8f7-f18ef66cc755"),
+            "75a4e97f-651d-49eb-8fe4-aa58a88cf527"),
         tc("Q7", "ABA问题为什么在字符串场景下容易出现？",
-            "49aeddbc-f1cc-4004-a8f7-f18ef66cc755"),
+            "75a4e97f-651d-49eb-8fe4-aa58a88cf527"),
         tc("Q8", "如何解决ABA问题？",
-            "49aeddbc-f1cc-4004-a8f7-f18ef66cc755",
-            "5d2f7301-ecb3-4017-8ab7-068d805d4655"),
+            "75a4e97f-651d-49eb-8fe4-aa58a88cf527",
+            "8c2a74e9-9e6a-42b1-8172-662677826174"),
         tc("Q9", "AtomicMarkableReference和AtomicStampedReference的使用场景有什么区别？",
-            "5d2f7301-ecb3-4017-8ab7-068d805d4655"),
+            "8c2a74e9-9e6a-42b1-8172-662677826174"),
         tc("Q10", "AtomicIntegerArray保护的是什么？",
-            "5d2f7301-ecb3-4017-8ab7-068d805d4655",
-            "7404bc7a-e5f5-459b-8cf5-27d63c7cc267"),
+            "8c2a74e9-9e6a-42b1-8172-662677826174",
+            "0cfb957d-5ef8-486f-ac74-255fdbfdc145"),
         tc("Q11", "AtomicReferenceFieldUpdater使用时有什么要求？",
-            "7404bc7a-e5f5-459b-8cf5-27d63c7cc267"),
+            "0cfb957d-5ef8-486f-ac74-255fdbfdc145"),
         tc("Q12", "LongAdder为什么比AtomicInteger的incrementAndGet性能高？",
-            "7404bc7a-e5f5-459b-8cf5-27d63c7cc267",
-            "ab83701e-dada-4d14-be6c-415b4bf998a3"),
+            "0cfb957d-5ef8-486f-ac74-255fdbfdc145",
+            "d366a734-5579-4777-8dbc-3b90c67c41c9"),
         tc("Q13", "LongAdder的cell机制是如何工作的？",
-            "ab83701e-dada-4d14-be6c-415b4bf998a3"),
+            "d366a734-5579-4777-8dbc-3b90c67c41c9"),
         tc("Q14", "什么是伪共享？",
-            "ab83701e-dada-4d14-be6c-415b4bf998a3",
-            "4e04b4c8-3ea1-4a7b-a9ac-ec90f5fafb6e"),
+            "d366a734-5579-4777-8dbc-3b90c67c41c9",
+            "6f2f180d-34da-48c7-8169-ca7d34290053"),
         tc("Q15", "如何避免伪共享？",
-            "4e04b4c8-3ea1-4a7b-a9ac-ec90f5fafb6e"),
+            "6f2f180d-34da-48c7-8169-ca7d34290053"),
         tc("Q16", "Unsafe类如何获取？",
-            "4e04b4c8-3ea1-4a7b-a9ac-ec90f5fafb6e"),
+            "6f2f180d-34da-48c7-8169-ca7d34290053"),
         tc("Q17", "Unsafe执行CAS操作需要哪些步骤和参数？",
-            "4e04b4c8-3ea1-4a7b-a9ac-ec90f5fafb6e",
-            "49a0e9bb-d5ac-4b8e-ab6c-2d8f8bdce01e"),
+            "6f2f180d-34da-48c7-8169-ca7d34290053",
+            "f64e45bc-a3c0-4198-a3bf-99b2a721b836"),
         tc("Q18", "SimpleDateFormat有什么线程安全问题？",
-            "49a0e9bb-d5ac-4b8e-ab6c-2d8f8bdce01e"),
+            "f64e45bc-a3c0-4198-a3bf-99b2a721b836"),
         tc("Q19", "什么是保护性拷贝？",
-            "49a0e9bb-d5ac-4b8e-ab6c-2d8f8bdce01e",
-            "95a10806-958d-4813-8984-9bf0ba333489"),
+            "f64e45bc-a3c0-4198-a3bf-99b2a721b836",
+            "eeae0384-69a8-4c95-9885-621a385674fe"),
         tc("Q20", "final关键字对字节码执行效率有什么影响？",
-            "95a10806-958d-4813-8984-9bf0ba333489")
+            "eeae0384-69a8-4c95-9885-621a385674fe")
     );
 
     // ==================== 评测入口 ====================
