@@ -335,6 +335,118 @@ class BM25WritePathTest {
         log.info("========== 回填测试通过 ✓ ==========\n");
     }
 
+    // ==================== 测试6：分词器诊断——验证复合技术词是否被切碎 ====================
+
+    /**
+     * 选取测试集中包含精确专有名词的典型 query，打印分词结果，验证技术术语是否被完整保留。
+     *
+     * <p><b>诊断目的</b>：纯BM25的Recall@5(0.81) 低于纯向量(0.88)，
+     * 且大部分单chunk题的query本身就带精确专有名词，应该是BM25强项。
+     * 需要排查 BM25Tokenizer 是否把 "ForwardingNode"、"批量重偏向" 等词切碎了。</p>
+     *
+     * <p>运行：{@code ./gradlew test --tests "BM25WritePathTest.diagnoseTokenization"}</p>
+     */
+    @Test
+    @DisplayName("分词器诊断：验证复合技术词是否完整保留")
+    void diagnoseTokenization() {
+        log.info("========== BM25 分词器诊断 ==========\n");
+
+        // 从120题测试集精选的典型query（覆盖英文驼峰、中文复合词、混合中英文）
+        record TestQuery(String id, String query, List<String> mustContainTerms) {}
+        List<TestQuery> cases = List.of(
+            // === 英文驼峰类名 ===
+            new TestQuery("QJUC-15", "JDK8 ConcurrentHashMap 的 get 方法中 ForwardingNode 的作用是什么",
+                List.of("ConcurrentHashMap", "ForwardingNode", "JDK8")),
+            new TestQuery("QJUC-17", "JDK7 ConcurrentHashMap 的 Segment 机制是怎样的",
+                List.of("ConcurrentHashMap", "Segment", "JDK7")),
+            new TestQuery("QJUC-14", "ConcurrentHashMap 的 computeIfAbsent 方法有什么作用",
+                List.of("ConcurrentHashMap", "computeIfAbsent")),
+            new TestQuery("QJUC-?", "ThreadLocalMap 的 Entry 为什么用弱引用",
+                List.of("ThreadLocalMap", "Entry")),
+            new TestQuery("QMQ-09", "RocketMQ 中 CommitLog 和 ConsumeQueue 的关系是什么",
+                List.of("RocketMQ", "CommitLog", "ConsumeQueue")),
+            new TestQuery("QMQ-?", "RocketMQ DefaultMQPushConsumer 的回调函数机制",
+                List.of("RocketMQ", "DefaultMQPushConsumer")),
+
+            // === 中文复合技术词 ===
+            new TestQuery("QJUC-?", "批量重偏向和批量撤销有什么区别",
+                List.of("批量重偏向", "批量撤销")),
+            new TestQuery("QJUC-?", "轻量级锁的实现原理",
+                List.of("轻量级锁")),
+            new TestQuery("QJUC-?", "锁膨胀的过程是怎样的",
+                List.of("锁膨胀")),
+            new TestQuery("QJVM-?", "双亲委派机制是什么",
+                List.of("双亲委派", "双亲委派机制")),
+            new TestQuery("QJVM-?", "双亲委派机制被破坏的场景有哪些",
+                List.of("双亲委派", "双亲委派机制")),
+
+            // === Redis 精确类型名 ===
+            new TestQuery("QRedis-02", "Redis 字符串类型中 raw 和 embstr 有什么区别",
+                List.of("Redis", "raw", "embstr")),
+            new TestQuery("QRedis-?", "Redis ziplist 和 quicklist 的区别",
+                List.of("Redis", "ziplist", "quicklist")),
+
+            // === 混合中英文 ===
+            new TestQuery("QJUC-?", "CAS 操作在 Unsafe 类中如何实现",
+                List.of("CAS", "Unsafe")),
+            new TestQuery("QJUC-?", "AQS 和 ReentrantLock 的关系",
+                List.of("AQS", "ReentrantLock"))
+        );
+
+        int totalChecks = 0;
+        int failedChecks = 0;
+
+        for (TestQuery tc : cases) {
+            List<String> tokens = tokenizer.tokenize(tc.query);
+
+            log.info("--- {}", tc.id);
+            log.info("  Query: {}", tc.query);
+            log.info("  Tokens ({}): [{}]", tokens.size(),
+                String.join(", ", tokens));
+
+            // 检查每个必须出现的关键词
+            for (String must : tc.mustContainTerms) {
+                totalChecks++;
+                boolean found = tokens.contains(must);
+                if (!found) {
+                    failedChecks++;
+                    log.warn("  ✗ 缺失关键词: \"{}\"", must);
+
+                    // 尝试找出被切成什么了
+                    List<String> parts = findPartialMatches(tokens, must);
+                    if (!parts.isEmpty()) {
+                        log.warn("    → 可能被切碎为: {}", parts);
+                    }
+                }
+            }
+            log.info("");
+        }
+
+        // 汇总
+        log.info("═══════════════════════════════════════════════");
+        log.info("诊断结果: {}/{} 个必须词通过, {}/{} 失败",
+            totalChecks - failedChecks, totalChecks, failedChecks, totalChecks);
+        if (failedChecks > 0) {
+            log.warn("⚠ 存在技术词被切碎的情况——这是 BM25 Recall 偏低的可验证根因");
+        } else {
+            log.info("✅ 所有技术词完整保留，BM25分数低的原因不在分词器");
+        }
+        log.info("═══════════════════════════════════════════════\n");
+    }
+
+    /** 在 token 列表中查找与目标词有重叠子串的 token（用于诊断切碎） */
+    private static List<String> findPartialMatches(List<String> tokens, String target) {
+        List<String> parts = new ArrayList<>();
+        String lower = target.toLowerCase();
+        for (String t : tokens) {
+            if (!t.equals(target) && (t.contains(lower.substring(0, Math.min(3, lower.length())))
+                    || lower.contains(t.toLowerCase()))) {
+                parts.add(t);
+            }
+        }
+        return parts;
+    }
+
     // ==================== 辅助方法 ====================
 
     private static Document createChunk(String id, String text) {

@@ -1,6 +1,7 @@
 package interview.guide.modules.knowledgebase.evaluation;
 
 import interview.guide.modules.knowledgebase.bm25.BM25SearchService;
+import interview.guide.modules.knowledgebase.bm25.HybridSearchService;
 import interview.guide.modules.knowledgebase.service.KnowledgeBaseVectorService;
 import org.junit.jupiter.api.*;
 import org.springframework.ai.document.Document;
@@ -45,6 +46,9 @@ class FullEvaluationTest {
 
     @Autowired
     private BM25SearchService bm25SearchService;
+
+    @Autowired
+    private HybridSearchService hybridSearchService;
 
     // ==================== 正例题 ====================
 
@@ -289,6 +293,171 @@ class FullEvaluationTest {
             totals[4] / topicCount, totals[5] / topicCount,
             totals[6] / topicCount, totals[7] / topicCount);
         System.out.println();
+    }
+
+    // ==================== RRF 混合检索评测 ====================
+
+    @Test
+    @DisplayName("三路对比：向量 vs BM25 vs RRF混合检索")
+    void evaluateHybridComparison() {
+        System.out.println("\n╔══════════════════════════════════════════════════════════════════════════╗");
+        System.out.println("║      三路对比：向量检索 vs BM25 关键词检索 vs RRF 混合检索                ║");
+        System.out.println("╚══════════════════════════════════════════════════════════════════════════╝\n");
+
+        System.out.printf("%-10s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %8s\n",
+            "主题", "V-R", "B-R", "H-R", "V-P", "B-P", "H-P", "V-N", "B-N", "H-N", "V-M", "B-M", "H-M");
+        System.out.println("-".repeat(140));
+
+        // V/H/B = Vector/Hybrid/BM25, R/P/N/M = Recall/Precision/NDCG/MRR
+        double[] totals = new double[12];
+        int topicCount = 0;
+        int hybridHits = 0, hybridExpected = 0;
+
+        for (var entry : Map.of("JUC", JUC, "JVM", JVM, "Redis", REDIS, "RocketMQ", ROCKETMQ).entrySet()) {
+            TopicSummary vs = runTopic(entry.getKey(), entry.getValue());
+            TopicSummary bs = runTopicBm25(entry.getKey(), entry.getValue());
+            TopicSummary hs = runTopicHybrid(entry.getKey(), entry.getValue(),
+                HybridSearchService.DEFAULT_RECALL_PER_PATH, HybridSearchService.DEFAULT_RRF_K);
+
+            System.out.printf("%-10s | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f\n",
+                entry.getKey(),
+                vs.avgRecall, bs.avgRecall, hs.avgRecall,
+                vs.avgPrecision, bs.avgPrecision, hs.avgPrecision,
+                vs.avgNdcg, bs.avgNdcg, hs.avgNdcg,
+                vs.avgMrr, bs.avgMrr, hs.avgMrr);
+
+            totals[0] += vs.avgRecall; totals[1] += bs.avgRecall; totals[2] += hs.avgRecall;
+            totals[3] += vs.avgPrecision; totals[4] += bs.avgPrecision; totals[5] += hs.avgPrecision;
+            totals[6] += vs.avgNdcg; totals[7] += bs.avgNdcg; totals[8] += hs.avgNdcg;
+            totals[9] += vs.avgMrr; totals[10] += bs.avgMrr; totals[11] += hs.avgMrr;
+            hybridHits += hs.totalHits;
+            hybridExpected += hs.totalExpected;
+            topicCount++;
+        }
+
+        System.out.println("-".repeat(140));
+        System.out.printf("%-10s | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f\n",
+            "平均",
+            totals[0] / topicCount, totals[1] / topicCount, totals[2] / topicCount,
+            totals[3] / topicCount, totals[4] / topicCount, totals[5] / topicCount,
+            totals[6] / topicCount, totals[7] / topicCount, totals[8] / topicCount,
+            totals[9] / topicCount, totals[10] / topicCount, totals[11] / topicCount);
+        System.out.println();
+
+        // RRF 混合检索全量汇总
+        double rrfRecall = totals[2] / topicCount;
+        double rrfPrec = totals[5] / topicCount;
+        double rrfNdcg = totals[8] / topicCount;
+        double rrfMrr = totals[11] / topicCount;
+        System.out.println("══════════════ RRF 混合检索全量汇总 ══════════════");
+        System.out.printf("Recall@%d:    %.2f\n", K, rrfRecall);
+        System.out.printf("Precision@%d: %.2f\n", K, rrfPrec);
+        System.out.printf("NDCG@%d:      %.2f\n", K, rrfNdcg);
+        System.out.printf("MRR:          %.2f\n", rrfMrr);
+        System.out.printf("总命中:        %d / %d\n", hybridHits, hybridExpected);
+        System.out.println("═══════════════════════════════════════════════\n");
+
+        // 打印提升幅度
+        double vecRecall = totals[0] / topicCount;
+        double bm25Recall = totals[1] / topicCount;
+        System.out.println("=== RRF vs 纯向量 Recall 提升: " + String.format("%+.2f", rrfRecall - vecRecall) + " ===");
+        System.out.println("=== RRF vs 纯BM25  Recall 提升: " + String.format("%+.2f", rrfRecall - bm25Recall) + " ===");
+        System.out.println();
+    }
+
+    @Test
+    @DisplayName("RRF k 值消融实验：k=30 vs k=60 vs k=100")
+    void evaluateRrfKAblation() {
+        System.out.println("\n╔══════════════════════════════════════════════════════════════╗");
+        System.out.println("║          RRF k 值消融实验 (recallPerPath=30)                  ║");
+        System.out.println("╚══════════════════════════════════════════════════════════════╝\n");
+
+        int[] kValues = {30, 60, 100};
+        String[] labels = {"k=30", "k=60 (默认)", "k=100"};
+
+        // 收集每个 k 值的全量汇总
+        System.out.printf("%-12s | %8s | %8s | %8s | %8s\n",
+            "k值", "Recall@5", "Precision@5", "NDCG@5", "MRR");
+        System.out.println("-".repeat(62));
+
+        double bestRecall = 0;
+        int bestK = 60;
+        double bestPrec = 0, bestNdcg = 0, bestMrr = 0;
+        int bestHits = 0, bestExpected = 0;
+
+        for (int ki = 0; ki < kValues.length; ki++) {
+            int rrfK = kValues[ki];
+            double sumR = 0, sumP = 0, sumN = 0, sumM = 0;
+            int sumHits = 0, sumExpected = 0;
+
+            for (var entry : Map.of("JUC", JUC, "JVM", JVM, "Redis", REDIS, "RocketMQ", ROCKETMQ).entrySet()) {
+                TopicSummary s = runTopicHybrid(entry.getKey(), entry.getValue(),
+                    HybridSearchService.DEFAULT_RECALL_PER_PATH, rrfK);
+                sumR += s.avgRecall;
+                sumP += s.avgPrecision;
+                sumN += s.avgNdcg;
+                sumM += s.avgMrr;
+                sumHits += s.totalHits;
+                sumExpected += s.totalExpected;
+            }
+
+            double avgR = sumR / 4;
+            double avgP = sumP / 4;
+            double avgN = sumN / 4;
+            double avgM = sumM / 4;
+
+            System.out.printf("%-12s | %8.2f | %8.2f | %8.2f | %8.2f | %6d/%d\n",
+                labels[ki], avgR, avgP, avgN, avgM, sumHits, sumExpected);
+
+            if (avgR > bestRecall) {
+                bestRecall = avgR;
+                bestK = rrfK;
+                bestPrec = avgP;
+                bestNdcg = avgN;
+                bestMrr = avgM;
+                bestHits = sumHits;
+                bestExpected = sumExpected;
+            }
+        }
+
+        System.out.println("-".repeat(62));
+        System.out.println("最佳 k 值: " + bestK + " (Recall@5=" + String.format("%.2f", bestRecall) + ")");
+        System.out.println("\n══════════════ RRF 混合检索全量汇总 ══════════════");
+        System.out.printf("Recall@%d:    %.2f\n", K, bestRecall);
+        System.out.printf("Precision@%d: %.2f\n", K, bestPrec);
+        System.out.printf("NDCG@%d:      %.2f\n", K, bestNdcg);
+        System.out.printf("MRR:          %.2f\n", bestMrr);
+        System.out.printf("总命中:        %d / %d\n", bestHits, bestExpected);
+        System.out.println("═══════════════════════════════════════════════\n");
+    }
+
+    // ==================== RRF 混合检索内部方法 ====================
+
+    private TopicSummary runTopicHybrid(String name, List<KbTestCase> cases, int recallPerPath, int rrfK) {
+        List<EvalRow> rows = new ArrayList<>();
+        for (KbTestCase tc : cases) {
+            List<HybridSearchService.HybridHit> hits = hybridSearchService.search(
+                tc.question, tc.kbIds, K, recallPerPath, rrfK);
+            List<String> retrieved = hits.stream()
+                .map(HybridSearchService.HybridHit::chunkId)
+                .limit(K)
+                .toList();
+            Set<String> gt = new HashSet<>(tc.groundTruthIds);
+            Set<String> topKSet = new HashSet<>(retrieved);
+            topKSet.retainAll(gt);
+            int matched = topKSet.size();
+            rows.add(new EvalRow(tc.id, tc.question, matched, gt.size(),
+                computeRecall(gt, matched), computePrecision(matched),
+                computeNDCG(retrieved, gt), computeMRR(retrieved, gt),
+                retrieved, tc.groundTruthIds));
+        }
+        double rec = rows.stream().mapToDouble(r -> r.recall).average().orElse(0);
+        double prec = rows.stream().mapToDouble(r -> r.precision).average().orElse(0);
+        double ndcg = rows.stream().mapToDouble(r -> r.ndcg).average().orElse(0);
+        double mrr = rows.stream().mapToDouble(r -> r.mrr).average().orElse(0);
+        int hits = rows.stream().mapToInt(r -> r.hits).sum();
+        int expected = rows.stream().mapToInt(r -> r.expectedTotal).sum();
+        return new TopicSummary(name, rec, prec, ndcg, mrr, hits, expected, rows);
     }
 
     // ==================== BM25 内部方法 ====================
