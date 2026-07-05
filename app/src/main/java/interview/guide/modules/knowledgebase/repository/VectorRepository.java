@@ -6,6 +6,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
 /**
  * 向量存储Repository
  * 负责向量数据的增删改查操作
@@ -16,6 +20,40 @@ import org.springframework.transaction.annotation.Transactional;
 public class VectorRepository {
     
     private final JdbcTemplate jdbcTemplate;
+
+    /**
+     * 从 vector_store 读取指定知识库的所有 chunk 数据
+     * <p>用于 BM25 回填：在已有向量数据的前提下，补建倒排索引</p>
+     *
+     * @param kbId 知识库 ID
+     * @return (chunkId, content) 列表，与 vector_store.id 一致
+     */
+    public List<VectorChunk> readChunksByKbId(Long kbId) {
+        String sql = """
+            SELECT id, content
+            FROM vector_store
+            WHERE metadata->>'kb_id' = ?
+            ORDER BY id
+            """;
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, kbId.toString());
+        List<VectorChunk> chunks = new ArrayList<>(rows.size());
+        for (Map<String, Object> row : rows) {
+            // vector_store.id 在 PostgreSQL 中是 UUID 类型，JDBC 返回 java.util.UUID
+            Object idObj = row.get("id");
+            String id = idObj != null ? idObj.toString() : null;
+            String content = (String) row.get("content");
+            if (id != null && content != null && !content.isBlank()) {
+                chunks.add(new VectorChunk(id, content));
+            }
+        }
+        log.info("从 vector_store 读取 chunk: kbId={}, 有效 chunk 数={}", kbId, chunks.size());
+        return chunks;
+    }
+
+    /**
+     * vector_store 中的 chunk 记录（仅 id + content，不包含 embedding）
+     */
+    public record VectorChunk(String id, String content) {}
     
     /**
      * 删除指定知识库的所有向量数据

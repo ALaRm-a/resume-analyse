@@ -1,5 +1,7 @@
 package interview.guide.modules.knowledgebase.bm25;
 
+import interview.guide.modules.knowledgebase.repository.VectorRepository;
+import interview.guide.modules.knowledgebase.repository.VectorRepository.VectorChunk;
 import interview.guide.modules.knowledgebase.util.BM25Tokenizer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -40,6 +42,7 @@ public class BM25IndexService {
 
     private final BM25Tokenizer tokenizer;
     private final BM25Repository repository;
+    private final VectorRepository vectorRepository;
 
     /**
      * 为一批 chunk 建立 BM25 倒排索引（幂等：如已有旧索引则先清再建）
@@ -145,6 +148,58 @@ public class BM25IndexService {
 
         log.info("BM25 索引构建完成: kbId={}, 总 chunk={}, 有效={}, 空={}, 总词条={}",
             kbId, chunks.size(), validChunks, emptyChunks, allEntries.size());
+    }
+
+    /**
+     * 回填：从 vector_store 读取已有 chunk → 用相同 UUID+content 构建 BM25 索引
+     *
+     * <p><b>使用场景</b>：BM25 代码上线晚于知识库入库流程，vector_store 已经有数据但三张
+     * BM25 表为空。此方法从 vector_store 查询已有 chunk 并补建倒排索引，确保
+     * chunk_id 与 vector_store.id 一致。</p>
+     *
+     * <p>每个 kb 的回填与 {@link #indexChunks} 走相同的两阶段写入路径（内存聚合→批量落库），
+     * 幂等保护同样生效（已有索引则先清再建）。</p>
+     *
+     * @param kbIds 需要回填的知识库 ID 列表
+     * @return 每个 kb 实际回填的 chunk 数
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public Map<Long, Integer> backfillFromVectorStore(List<Long> kbIds) {
+        if (kbIds == null || kbIds.isEmpty()) {
+            log.warn("kbIds 列表为空，跳过回填");
+            return Map.of();
+        }
+
+        log.info("开始 BM25 回填: kbIds={}", kbIds);
+        Map<Long, Integer> result = new LinkedHashMap<>();
+
+        for (Long kbId : kbIds) {
+            // 从 vector_store 读取已有 chunk
+            List<VectorChunk> chunks = vectorRepository.readChunksByKbId(kbId);
+            if (chunks.isEmpty()) {
+                log.warn("kbId={} 在 vector_store 中无 chunk 数据，跳过回填", kbId);
+                result.put(kbId, 0);
+                continue;
+            }
+
+            // 构建 Document（复用 vector_store 中的 UUID）
+            List<Document> documents = chunks.stream()
+                .map(c -> Document.builder()
+                    .id(c.id())
+                    .text(c.content())
+                    .metadata(Map.of("kb_id", kbId.toString()))
+                    .build())
+                .toList();
+
+            // 走标准两阶段写入（幂等保护 + 内存聚合 + 批量落库）
+            indexChunks(kbId, documents);
+            result.put(kbId, chunks.size());
+
+            log.info("kbId={} 回填完成: {} 个 chunk", kbId, chunks.size());
+        }
+
+        log.info("BM25 回填全部完成: {}", result);
+        return result;
     }
 
     /**

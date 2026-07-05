@@ -1,5 +1,6 @@
 package interview.guide.modules.knowledgebase.evaluation;
 
+import interview.guide.modules.knowledgebase.bm25.BM25SearchService;
 import interview.guide.modules.knowledgebase.service.KnowledgeBaseVectorService;
 import org.junit.jupiter.api.*;
 import org.springframework.ai.document.Document;
@@ -19,6 +20,16 @@ import java.util.*;
  *   <li>kb_id=4: Redis (19 chunks, 26 题)</li>
  *   <li>kb_id=5: RocketMQ (16 chunks, 25 题)</li>
  * </ul>
+ *
+ * <p><b>BM25 评测前置条件</b>：
+ * 跑 BM25 评测前必须先回填数据，否则 BM25 三张表为空，全部指标为 0：
+ * <pre>
+ *   # 第一步：回填已有 vector_store 数据到 BM25 索引
+ *   ./gradlew test --tests "BM25WritePathTest.backfillExistingKbData"
+ *
+ *   # 第二步：跑 BM25 评测
+ *   ./gradlew test --tests "FullEvaluationTest.evaluateComparison"
+ * </pre>
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 @ActiveProfiles("test")
@@ -31,6 +42,9 @@ class FullEvaluationTest {
 
     @Autowired
     private KnowledgeBaseVectorService vectorService;
+
+    @Autowired
+    private BM25SearchService bm25SearchService;
 
     // ==================== 正例题 ====================
 
@@ -175,6 +189,139 @@ class FullEvaluationTest {
             }
             System.out.println();
         }
+    }
+
+    // ==================== BM25 正例题评测 ====================
+
+    @Test
+    @DisplayName("BM25 JUC 主题评测")
+    void evaluateJUC_BM25() {
+        evaluateTopicBm25("JUC", JUC);
+    }
+
+    @Test
+    @DisplayName("BM25 JVM 主题评测")
+    void evaluateJVM_BM25() {
+        evaluateTopicBm25("JVM", JVM);
+    }
+
+    @Test
+    @DisplayName("BM25 Redis 主题评测")
+    void evaluateRedis_BM25() {
+        evaluateTopicBm25("Redis", REDIS);
+    }
+
+    @Test
+    @DisplayName("BM25 RocketMQ 主题评测")
+    void evaluateRocketMQ_BM25() {
+        evaluateTopicBm25("RocketMQ", ROCKETMQ);
+    }
+
+    @Test
+    @DisplayName("BM25 全主题汇总")
+    void evaluateAllTopicsBm25() {
+        System.out.println("\n╔════════════════════════════════════════════════════════╗");
+        System.out.println("║          BM25 关键词检索评测 — 四主题汇总               ║");
+        System.out.println("╚════════════════════════════════════════════════════════╝\n");
+
+        List<TopicSummary> summaries = new ArrayList<>();
+        for (var entry : Map.of("JUC", JUC, "JVM", JVM, "Redis", REDIS, "RocketMQ", ROCKETMQ).entrySet()) {
+            TopicSummary s = runTopicBm25(entry.getKey(), entry.getValue());
+            summaries.add(s);
+            printTopicSummary(s);
+        }
+
+        double avgRecall = summaries.stream().mapToDouble(s -> s.avgRecall).average().orElse(0);
+        double avgPrec = summaries.stream().mapToDouble(s -> s.avgPrecision).average().orElse(0);
+        double avgNdcg = summaries.stream().mapToDouble(s -> s.avgNdcg).average().orElse(0);
+        double avgMrr = summaries.stream().mapToDouble(s -> s.avgMrr).average().orElse(0);
+        int totalHits = summaries.stream().mapToInt(s -> s.totalHits).sum();
+        int totalExpected = summaries.stream().mapToInt(s -> s.totalExpected).sum();
+
+        System.out.println("\n══════════════ BM25 全量汇总 ══════════════");
+        System.out.printf("Recall@%d:    %.2f\n", K, avgRecall);
+        System.out.printf("Precision@%d: %.2f\n", K, avgPrec);
+        System.out.printf("NDCG@%d:      %.2f\n", K, avgNdcg);
+        System.out.printf("MRR:          %.2f\n", avgMrr);
+        System.out.printf("总命中:        %d / %d\n", totalHits, totalExpected);
+        System.out.println("═══════════════════════════════════════════\n");
+    }
+
+    // ==================== 向量 vs BM25 对比 ====================
+
+    @Test
+    @DisplayName("向量检索 vs BM25 关键词检索 对比报告")
+    void evaluateComparison() {
+        System.out.println("\n╔══════════════════════════════════════════════════════════════╗");
+        System.out.println("║        向量检索 vs BM25 关键词检索 对比报告                   ║");
+        System.out.println("╚══════════════════════════════════════════════════════════════╝\n");
+
+        System.out.printf("%-10s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %8s\n",
+            "主题", "V-Recall", "B-Recall", "V-Prec", "B-Prec", "V-NDCG", "B-NDCG", "V-MRR", "B-MRR");
+        System.out.println("-".repeat(105));
+
+        double[] totals = {0, 0, 0, 0, 0, 0, 0, 0}; // V-R, B-R, V-P, B-P, V-N, B-N, V-M, B-M
+        int topicCount = 0;
+
+        for (var entry : Map.of("JUC", JUC, "JVM", JVM, "Redis", REDIS, "RocketMQ", ROCKETMQ).entrySet()) {
+            TopicSummary vs = runTopic(entry.getKey(), entry.getValue());
+            TopicSummary bs = runTopicBm25(entry.getKey(), entry.getValue());
+
+            System.out.printf("%-10s | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f\n",
+                entry.getKey(),
+                vs.avgRecall, bs.avgRecall,
+                vs.avgPrecision, bs.avgPrecision,
+                vs.avgNdcg, bs.avgNdcg,
+                vs.avgMrr, bs.avgMrr);
+
+            totals[0] += vs.avgRecall; totals[1] += bs.avgRecall;
+            totals[2] += vs.avgPrecision; totals[3] += bs.avgPrecision;
+            totals[4] += vs.avgNdcg; totals[5] += bs.avgNdcg;
+            totals[6] += vs.avgMrr; totals[7] += bs.avgMrr;
+            topicCount++;
+        }
+
+        System.out.println("-".repeat(105));
+        System.out.printf("%-10s | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f\n",
+            "平均",
+            totals[0] / topicCount, totals[1] / topicCount,
+            totals[2] / topicCount, totals[3] / topicCount,
+            totals[4] / topicCount, totals[5] / topicCount,
+            totals[6] / topicCount, totals[7] / topicCount);
+        System.out.println();
+    }
+
+    // ==================== BM25 内部方法 ====================
+
+    private void evaluateTopicBm25(String name, List<KbTestCase> cases) {
+        TopicSummary s = runTopicBm25(name, cases);
+        printDetailTable(name, s, cases);
+    }
+
+    private TopicSummary runTopicBm25(String name, List<KbTestCase> cases) {
+        List<EvalRow> rows = new ArrayList<>();
+        for (KbTestCase tc : cases) {
+            List<BM25SearchService.Bm25Hit> hits = bm25SearchService.search(tc.question, tc.kbIds, K);
+            List<String> retrieved = hits.stream()
+                .map(BM25SearchService.Bm25Hit::chunkId)
+                .limit(K)
+                .toList();
+            Set<String> gt = new HashSet<>(tc.groundTruthIds);
+            Set<String> topKSet = new HashSet<>(retrieved);
+            topKSet.retainAll(gt);
+            int matched = topKSet.size();
+            rows.add(new EvalRow(tc.id, tc.question, matched, gt.size(),
+                computeRecall(gt, matched), computePrecision(matched),
+                computeNDCG(retrieved, gt), computeMRR(retrieved, gt),
+                retrieved, tc.groundTruthIds));
+        }
+        double rec = rows.stream().mapToDouble(r -> r.recall).average().orElse(0);
+        double prec = rows.stream().mapToDouble(r -> r.precision).average().orElse(0);
+        double ndcg = rows.stream().mapToDouble(r -> r.ndcg).average().orElse(0);
+        double mrr = rows.stream().mapToDouble(r -> r.mrr).average().orElse(0);
+        int hits = rows.stream().mapToInt(r -> r.hits).sum();
+        int expected = rows.stream().mapToInt(r -> r.expectedTotal).sum();
+        return new TopicSummary(name, rec, prec, ndcg, mrr, hits, expected, rows);
     }
 
     // ==================== 内部方法 ====================
