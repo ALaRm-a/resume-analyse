@@ -6,9 +6,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * 向量存储Repository
@@ -64,6 +63,32 @@ public class VectorRepository {
      * @param knowledgeBaseId 知识库ID
      * @return 删除的行数
      */
+    /**
+     * 批量根据 chunk ID 查询文本内容
+     *
+     * @param chunkIds UUID 格式的 chunk ID 列表
+     * @return id → content 的映射（保持插入顺序，不存在的 ID 不会出现在 map 中）
+     */
+    public Map<String, String> findByIds(List<String> chunkIds) {
+        if (chunkIds == null || chunkIds.isEmpty()) {
+            return Map.of();
+        }
+        String placeholders = chunkIds.stream().map(id -> "?").collect(Collectors.joining(","));
+        String sql = "SELECT id, content FROM vector_store WHERE CAST(id AS text) IN (" + placeholders + ")";
+
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, chunkIds.toArray());
+        Map<String, String> result = new LinkedHashMap<>(rows.size());
+        for (Map<String, Object> row : rows) {
+            Object idObj = row.get("id");
+            String id = idObj != null ? idObj.toString() : null;
+            String content = (String) row.get("content");
+            if (id != null && content != null) {
+                result.put(id, content);
+            }
+        }
+        return result;
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public int deleteByKnowledgeBaseId(Long knowledgeBaseId) {
         log.info("开始删除知识库向量数据: kbId={}", knowledgeBaseId);
