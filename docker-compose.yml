@@ -14,6 +14,8 @@ services:
     # 使用带有 pgvector 插件的 PostgreSQL 16 镜像
     image: pgvector/pgvector:pg16
     container_name: interview-postgres
+    # 崩溃自动恢复：配合 depends_on 健康检查，避免 app 在 PG 未就绪时启动导致连接失败
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
@@ -47,6 +49,7 @@ services:
   redis:
     image: redis:7
     container_name: interview-redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
@@ -72,6 +75,7 @@ services:
   minio:
     image: minio/minio
     container_name: interview-minio
+    restart: unless-stopped
     # 启动命令：指定数据目录和控制台地址
     command: server /data --console-address ":9001"
     environment:
@@ -127,6 +131,8 @@ services:
       context: .
       dockerfile: app/Dockerfile
     container_name: interview-app
+    # 崩溃自动恢复：即使因 PG 未就绪而 Exited，也会自动重试，直到连接成功
+    restart: unless-stopped
     # 依赖管理：确保基础设施准备好后再启动后端
     depends_on:
       postgres:
@@ -179,6 +185,7 @@ services:
   frontend:
     build: ./frontend
     container_name: interview-frontend
+    restart: unless-stopped
     depends_on:
       - app
     ports:
@@ -192,5 +199,8 @@ services:
 # =========================================
 volumes:
   postgres_data:
+    name: resume-analyse_postgres_data
   redis_data:
+    name: resume-analyse_redis_data
   minio_data:
+    name: resume-analyse_minio_data
