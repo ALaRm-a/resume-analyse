@@ -6,7 +6,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.validation.BindException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -79,6 +81,28 @@ public class GlobalExceptionHandler {
     public Result<Void> handleIllegalArgumentException(IllegalArgumentException e) {
         log.warn("非法参数: {}", e.getMessage());
         return Result.error(ErrorCode.BAD_REQUEST, e.getMessage());
+    }
+
+    /**
+     * 处理请求方法不支持异常
+     * 当请求的 HTTP 方法与 Controller 映射不匹配时抛出（如对 POST 接口发 GET 请求）
+     */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    @ResponseStatus(HttpStatus.OK)
+    public Result<Void> handleMethodNotSupported(HttpRequestMethodNotSupportedException e) {
+        log.warn("请求方法不支持: {}，支持的方法: {}", e.getMethod(), e.getSupportedHttpMethods());
+        return Result.error(ErrorCode.BAD_REQUEST,
+                "请求方法 " + e.getMethod() + " 不被支持，该接口支持: " + e.getSupportedHttpMethods());
+    }
+
+    /**
+     * 处理静态资源找不到异常
+     * Spring Framework 7.0 对找不到的静态资源（如 favicon.ico）抛出此异常，静默返回 404
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public void handleNoResourceFound(NoResourceFoundException e) {
+        // 静态资源找不到，静默返回 404，不记日志
     }
     
     /**
