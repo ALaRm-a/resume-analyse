@@ -112,7 +112,7 @@ public class RagChatController {
         // 2. 获取流式响应
         StringBuilder fullContent = new StringBuilder();
 
-        return sessionService.getStreamAnswer(sessionId, request.question())
+        return sessionService.getStreamAnswer(sessionId, request.question(), request.rerank())
             .doOnNext(fullContent::append)
             // 使用 ServerSentEvent 包装，转义换行符避免破坏 SSE 格式
             .map(chunk -> ServerSentEvent.<String>builder()

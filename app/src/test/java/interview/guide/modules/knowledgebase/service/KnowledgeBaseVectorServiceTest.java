@@ -2,6 +2,7 @@ package interview.guide.modules.knowledgebase.service;
 
 import interview.guide.modules.knowledgebase.bm25.BM25IndexService;
 import interview.guide.modules.knowledgebase.repository.VectorRepository;
+import tools.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -53,7 +54,7 @@ class KnowledgeBaseVectorServiceTest {
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        vectorService = new KnowledgeBaseVectorService(vectorStore, vectorRepository,bm25IndexService);
+        vectorService = new KnowledgeBaseVectorService(vectorStore, vectorRepository, bm25IndexService, new ObjectMapper());
     }
 
     // ==================== 共享辅助方法 ====================
@@ -550,7 +551,157 @@ class KnowledgeBaseVectorServiceTest {
             List<Document> results = vectorService.similaritySearch(query, null, topK, 0.0);
 
             // Then
-            assertEquals(5, results.size(), "应该返回所有可用结果");
+        assertEquals(5, results.size(), "应该返回所有可用结果");
+    }
+    }
+
+    // ==================== findByIds 测试（供 Reranker 使用） ====================
+
+    @Nested
+    @DisplayName("根据 chunkId 批量查询 Document 测试")
+    class FindByIdsTests {
+
+        @Test
+        @DisplayName("正常查询：3 个 chunkId 返回 3 个含 metadata 的 Document")
+        void testFindByIdsBasic() {
+            // Given
+            List<String> chunkIds = List.of("uuid-1", "uuid-2", "uuid-3");
+            List<VectorRepository.VectorDocument> mockReturn = List.of(
+                    new VectorRepository.VectorDocument("uuid-1", "进程是程序的执行实例",
+                            "{\"kb_id\":\"1\"}"),
+                    new VectorRepository.VectorDocument("uuid-2", "线程是进程内的执行单元",
+                            "{\"kb_id\":\"1\"}"),
+                    new VectorRepository.VectorDocument("uuid-3", "协程是用户态的轻量级线程",
+                            "{\"kb_id\":\"2\"}")
+            );
+            when(vectorRepository.findDocumentsByIds(chunkIds)).thenReturn(mockReturn);
+
+            // When
+            List<Document> result = vectorService.findByIds(chunkIds);
+
+            // Then
+            assertEquals(3, result.size());
+            assertEquals("进程是程序的执行实例", result.get(0).getText());
+            assertEquals("uuid-1", result.get(0).getId());
+        }
+
+        @Test
+        @DisplayName("metadata JSON 正确解析为 Map")
+        void testFindByIdsMetadataParsed() {
+            // Given
+            List<String> chunkIds = List.of("uuid-1");
+            when(vectorRepository.findDocumentsByIds(chunkIds)).thenReturn(List.of(
+                    new VectorRepository.VectorDocument("uuid-1", "content",
+                            "{\"kb_id\":\"42\",\"source_file\":\"test.pdf\"}")
+            ));
+
+            // When
+            List<Document> result = vectorService.findByIds(chunkIds);
+
+            // Then
+            assertEquals(1, result.size());
+            Map<String, Object> metadata = result.get(0).getMetadata();
+            assertEquals("42", metadata.get("kb_id"));
+            assertEquals("test.pdf", metadata.get("source_file"));
+        }
+
+        @Test
+        @DisplayName("metadata JSON 为 null → 返回空 metadata Map")
+        void testFindByIdsNullMetadata() {
+            // Given
+            List<String> chunkIds = List.of("uuid-1");
+            when(vectorRepository.findDocumentsByIds(chunkIds)).thenReturn(List.of(
+                    new VectorRepository.VectorDocument("uuid-1", "content", null)
+            ));
+
+            // When
+            List<Document> result = vectorService.findByIds(chunkIds);
+
+            // Then
+            assertEquals(1, result.size());
+            assertTrue(result.get(0).getMetadata().isEmpty(),
+                    "metadata 为 null 时应返回空 Map");
+        }
+
+        @Test
+        @DisplayName("metadata JSON 格式错误 → 返回空 metadata Map（不抛异常）")
+        void testFindByIdsInvalidMetadataJson() {
+            // Given
+            List<String> chunkIds = List.of("uuid-1");
+            when(vectorRepository.findDocumentsByIds(chunkIds)).thenReturn(List.of(
+                    new VectorRepository.VectorDocument("uuid-1", "content", "not-a-json")
+            ));
+
+            // When
+            List<Document> result = vectorService.findByIds(chunkIds);
+
+            // Then
+            assertEquals(1, result.size());
+            assertTrue(result.get(0).getMetadata().isEmpty(),
+                    "metadata JSON 解析失败时应返回空 Map");
+        }
+
+        @Test
+        @DisplayName("部分 chunkId 不存在 → 只返回命中的")
+        void testFindByIdsPartialMatch() {
+            // Given
+            List<String> chunkIds = List.of("uuid-1", "uuid-2", "not-exist");
+            when(vectorRepository.findDocumentsByIds(chunkIds)).thenReturn(List.of(
+                    new VectorRepository.VectorDocument("uuid-1", "doc1", "{\"kb_id\":\"1\"}"),
+                    new VectorRepository.VectorDocument("uuid-2", "doc2", "{\"kb_id\":\"1\"}")
+            ));
+
+            // When
+            List<Document> result = vectorService.findByIds(chunkIds);
+
+            // Then
+            assertEquals(2, result.size(), "3 个请求只命中 2 个");
+        }
+
+        @Test
+        @DisplayName("空 chunkId 列表 → 返回空列表，不调 Repository")
+        void testFindByIdsEmptyList() {
+            // When
+            List<Document> result = vectorService.findByIds(List.of());
+
+            // Then
+            assertTrue(result.isEmpty());
+            verify(vectorRepository, never()).findDocumentsByIds(anyList());
+        }
+
+        @Test
+        @DisplayName("null chunkId 列表 → 返回空列表")
+        void testFindByIdsNullList() {
+            // When
+            List<Document> result = vectorService.findByIds(null);
+
+            // Then
+            assertTrue(result.isEmpty());
+            verify(vectorRepository, never()).findDocumentsByIds(anyList());
+        }
+
+        @Test
+        @DisplayName("SQL 返回顺序与请求顺序不同 → 验证不保证顺序（调用方需自行排序）")
+        void testFindByIdsOrderNotGuaranteed() {
+            // Given: 请求顺序是 uuid-1, uuid-2, uuid-3
+            List<String> chunkIds = List.of("uuid-1", "uuid-2", "uuid-3");
+            // Mock 返回顺序是 uuid-3, uuid-1, uuid-2（SQL 不保证顺序）
+            when(vectorRepository.findDocumentsByIds(chunkIds)).thenReturn(List.of(
+                    new VectorRepository.VectorDocument("uuid-3", "doc3", null),
+                    new VectorRepository.VectorDocument("uuid-1", "doc1", null),
+                    new VectorRepository.VectorDocument("uuid-2", "doc2", null)
+            ));
+
+            // When
+            List<Document> result = vectorService.findByIds(chunkIds);
+
+            // Then: 返回顺序应与 Mock 返回顺序一致（uuid-3, uuid-1, uuid-2），
+            //       而非请求顺序（uuid-1, uuid-2, uuid-3）
+            //       这证明了 orderByRrf 必须显式按 rrfScore 排序
+            assertEquals(3, result.size());
+            assertEquals("doc3", result.get(0).getText(), "第一个应是 Mock 返回的第一个");
+            assertEquals("doc1", result.get(1).getText(), "第二个应是 Mock 返回的第二个");
+            assertEquals("doc2", result.get(2).getText(), "第三个应是 Mock 返回的第三个");
         }
     }
 }

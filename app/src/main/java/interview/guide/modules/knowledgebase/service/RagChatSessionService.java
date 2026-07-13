@@ -155,15 +155,24 @@ public class RagChatSessionService {
     }
 
     /**
-     * 获取流式回答
+     * 获取流式回答（默认 rerank 策略，向后兼容）
      */
     public Flux<String> getStreamAnswer(Long sessionId, String question) {
+        return getStreamAnswer(sessionId, question, null);
+    }
+
+    /**
+     * 获取流式回答，支持接口级 rerank 开关
+     *
+     * @param rerankOverride null=默认策略（闸门自动判断），true=强制精排，false=强制跳过精排
+     */
+    public Flux<String> getStreamAnswer(Long sessionId, String question, Boolean rerankOverride) {
         RagChatSessionEntity session = sessionRepository.findByIdWithKnowledgeBases(sessionId)
             .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "会话不存在"));
 
         List<Long> kbIds = session.getKnowledgeBaseIds();
 
-        return queryService.answerQuestionStream(kbIds, question);
+        return queryService.answerQuestionStream(kbIds, question, rerankOverride);
     }
 
     /**

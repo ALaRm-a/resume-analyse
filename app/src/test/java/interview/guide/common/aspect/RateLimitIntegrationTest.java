@@ -36,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @Disabled
 class RateLimitIntegrationTest {
 
-    private static final String REDIS_ADDRESS = "redis://localhost:6379";
+    private static final String REDIS_ADDRESS = "redis://192.168.112.128:6379";
 
     private RedissonClient redissonClient;
     private String luaScript;

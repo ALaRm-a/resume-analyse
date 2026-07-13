@@ -9,7 +9,7 @@ interface Result<T = unknown> {
   data: T;
 }
 
-const baseURL = import.meta.env.PROD ? '' : 'http://localhost:8080';
+const baseURL = '';
 
 const instance: AxiosInstance = axios.create({
   baseURL,

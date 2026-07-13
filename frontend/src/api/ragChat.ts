@@ -1,6 +1,6 @@
 import { request, getErrorMessage } from './request';
 
-const API_BASE_URL = import.meta.env.PROD ? '' : 'http://localhost:8080';
+const API_BASE_URL = '';
 
 // ========== 类型定义 ==========
 
@@ -107,13 +107,16 @@ export const ragChatApi = {
 
   /**
    * 发送消息（流式SSE）
+   *
+   * @param rerank 接口级精排开关：不传=默认策略，true=强制精排，false=强制跳过精排
    */
   async sendMessageStream(
     sessionId: number,
     question: string,
     onMessage: (chunk: string) => void,
     onComplete: () => void,
-    onError: (error: Error) => void
+    onError: (error: Error) => void,
+    rerank?: boolean
   ): Promise<void> {
     try {
       const response = await fetch(
@@ -121,7 +124,7 @@ export const ragChatApi = {
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question }),
+          body: JSON.stringify({ question, rerank }),
         }
       );
 
