@@ -25,10 +25,15 @@ public class RagChatDTO {
 
     /**
      * 发送消息请求
+     *
+     * @param question 用户问题
+     * @param rerank   接口级精排开关：null=默认策略（闸门自动判断），true=强制精排，false=强制跳过精排
      */
     public record SendMessageRequest(
         @NotBlank(message = "问题不能为空")
-        String question
+        String question,
+
+        Boolean rerank
     ) {}
 
     /**

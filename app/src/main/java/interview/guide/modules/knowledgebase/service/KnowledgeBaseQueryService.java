@@ -2,8 +2,13 @@ package interview.guide.modules.knowledgebase.service;
 
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
+import interview.guide.modules.knowledgebase.bm25.HybridConfigProperties;
+import interview.guide.modules.knowledgebase.bm25.HybridSearchService;
 import interview.guide.modules.knowledgebase.model.QueryRequest;
 import interview.guide.modules.knowledgebase.model.QueryResponse;
+import interview.guide.modules.knowledgebase.rerank.DashScopeRerankService;
+import interview.guide.modules.knowledgebase.rerank.RerankConfigProperties;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.prompt.PromptTemplate;
@@ -17,10 +22,12 @@ import reactor.core.publisher.Flux;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.regex.Matcher;
@@ -58,6 +65,13 @@ public class KnowledgeBaseQueryService {
     private final int topkLong;
     private final double minScoreShort;
     private final double minScoreDefault;
+    // ===== Reranker + 混合检索新增依赖 =====
+    private final HybridSearchService hybridSearchService;
+    private final DashScopeRerankService rerankService;
+    private final HybridConfigProperties hybridConfig;
+    private final RerankConfigProperties rerankConfig;
+    /** skipPatterns 预编译缓存，@PostConstruct 时初始化 */
+    private List<Pattern> compiledSkipPatterns;
 
     public KnowledgeBaseQueryService(
             ChatClient.Builder chatClientBuilder,
@@ -73,7 +87,11 @@ public class KnowledgeBaseQueryService {
             @Value("${app.ai.rag.search.topk-medium:12}") int topkMedium,
             @Value("${app.ai.rag.search.topk-long:8}") int topkLong,
             @Value("${app.ai.rag.search.min-score-short:0.18}") double minScoreShort,
-            @Value("${app.ai.rag.search.min-score-default:0.28}") double minScoreDefault) throws IOException {
+            @Value("${app.ai.rag.search.min-score-default:0.28}") double minScoreDefault,
+            HybridSearchService hybridSearchService,
+            DashScopeRerankService rerankService,
+            HybridConfigProperties hybridConfig,
+            RerankConfigProperties rerankConfig) throws IOException {
         this.chatClient = chatClientBuilder.build();
         this.vectorService = vectorService;
         this.listService = listService;
@@ -88,6 +106,39 @@ public class KnowledgeBaseQueryService {
         this.topkLong = topkLong;
         this.minScoreShort = minScoreShort;
         this.minScoreDefault = minScoreDefault;
+        this.hybridSearchService = hybridSearchService;
+        this.rerankService = rerankService;
+        this.hybridConfig = hybridConfig;
+        this.rerankConfig = rerankConfig;
+    }
+
+    /**
+     * 启动时校验配置合法性 + 预编译 skipPatterns
+     *
+     * <p>非法组合 {@code hybrid=false && rerank=true} 直接抛异常拒绝启动，
+     * 不做静默降级（避免运维困惑）。</p>
+     */
+    @PostConstruct
+    void validateRerankConfig() {
+        // 预编译 skipPatterns 正则
+        List<String> patterns = rerankConfig.getSkipPatterns();
+        compiledSkipPatterns = (patterns == null || patterns.isEmpty())
+                ? List.of()
+                : patterns.stream().map(Pattern::compile).toList();
+
+        // 校验非法组合
+        if (!hybridConfig.isEnabled() && rerankConfig.isEnabled()) {
+            throw new IllegalStateException(
+                "非法配置组合：hybrid.enabled=false 且 rerank.enabled=true。"
+                + "Rerank 依赖混合检索的候选结果，必须先开启 hybrid.enabled");
+        }
+
+        log.info("RAG 检索配置加载完成: hybrid={}, rerank={}, recallPerPath={}, recallTopK={}, "
+                + "hybridFinalTopN={}, rerankFinalTopN={}, minCandidates={}, skipPatterns={}",
+            hybridConfig.isEnabled(), rerankConfig.isEnabled(),
+            hybridConfig.getRecallPerPath(), hybridConfig.getRecallTopK(),
+            hybridConfig.getFinalTopN(), rerankConfig.getFinalTopN(),
+            rerankConfig.getMinCandidatesForRerank(), compiledSkipPatterns.size());
     }
 
     /**
@@ -109,7 +160,16 @@ public class KnowledgeBaseQueryService {
      * @return AI回答
      */
     public String answerQuestion(List<Long> knowledgeBaseIds, String question) {
-        log.info("收到知识库提问: kbIds={}, question={}", knowledgeBaseIds, question);
+        return answerQuestion(knowledgeBaseIds, question, null);
+    }
+
+    /**
+     * 基于多个知识库回答用户问题（RAG），支持接口级 rerank 开关
+     *
+     * @param rerankOverride null=默认策略（闸门自动判断），true=强制精排，false=强制跳过精排
+     */
+    public String answerQuestion(List<Long> knowledgeBaseIds, String question, Boolean rerankOverride) {
+        log.info("收到知识库提问: kbIds={}, question={}, rerankOverride={}", knowledgeBaseIds, question, rerankOverride);
         if (knowledgeBaseIds == null || knowledgeBaseIds.isEmpty() || normalizeQuestion(question).isBlank()) {
             return NO_RESULT_RESPONSE;
         }
@@ -117,9 +177,9 @@ public class KnowledgeBaseQueryService {
         // 1. 验证知识库是否存在并更新问题计数（合并数据库操作）
         countService.updateQuestionCounts(knowledgeBaseIds);
 
-        // 2. Query rewrite + 动态参数检索（RAG）
+        // 2. Query rewrite + 三级分层检索（RAG）
         QueryContext queryContext = buildQueryContext(question);
-        List<Document> relevantDocs = retrieveRelevantDocs(queryContext, knowledgeBaseIds);
+        List<Document> relevantDocs = retrieveRelevantDocs(queryContext, knowledgeBaseIds, rerankOverride);
 
         if (!hasEffectiveHit(question, relevantDocs)) {
             return NO_RESULT_RESPONSE;
@@ -195,7 +255,16 @@ public class KnowledgeBaseQueryService {
      * @return 流式响应
      */
     public Flux<String> answerQuestionStream(List<Long> knowledgeBaseIds, String question) {
-        log.info("收到知识库流式提问: kbIds={}, question={}", knowledgeBaseIds, question);
+        return answerQuestionStream(knowledgeBaseIds, question, null);
+    }
+
+    /**
+     * 流式查询知识库（SSE），支持接口级 rerank 开关
+     *
+     * @param rerankOverride null=默认策略（闸门自动判断），true=强制精排，false=强制跳过精排
+     */
+    public Flux<String> answerQuestionStream(List<Long> knowledgeBaseIds, String question, Boolean rerankOverride) {
+        log.info("收到知识库流式提问: kbIds={}, question={}, rerankOverride={}", knowledgeBaseIds, question, rerankOverride);
         if (knowledgeBaseIds == null || knowledgeBaseIds.isEmpty() || normalizeQuestion(question).isBlank()) {
             return Flux.just(NO_RESULT_RESPONSE);
         }
@@ -204,9 +273,9 @@ public class KnowledgeBaseQueryService {
             // 1. 验证知识库是否存在并更新问题计数
             countService.updateQuestionCounts(knowledgeBaseIds);
 
-            // 2. Query rewrite + 动态参数检索
+            // 2. Query rewrite + 三级分层检索
             QueryContext queryContext = buildQueryContext(question);
-            List<Document> relevantDocs = retrieveRelevantDocs(queryContext, knowledgeBaseIds);
+            List<Document> relevantDocs = retrieveRelevantDocs(queryContext, knowledgeBaseIds, rerankOverride);
 
             if (!hasEffectiveHit(question, relevantDocs)) {
                 return Flux.just(NO_RESULT_RESPONSE);
@@ -260,24 +329,162 @@ public class KnowledgeBaseQueryService {
         return question == null ? "" : question.trim();
     }
 
-//    向量检索
-    private List<Document> retrieveRelevantDocs(QueryContext queryContext, List<Long> knowledgeBaseIds) {
-        for (String candidateQuery : queryContext.candidateQueries()) {
-            if (candidateQuery.isBlank()) {
-                continue;
+//    三级分层检索：Level 1 纯向量 / Level 2 混合+RRF / Level 3 混合+RRF+Rerank
+    List<Document> retrieveRelevantDocs(QueryContext queryContext, List<Long> knowledgeBaseIds,
+                                         Boolean userRerankOverride) {
+        // 只取第一个候选 query，不再循环多次尝试（见计划 2.5 节）
+        List<String> queries = queryContext.candidateQueries();
+        if (queries.isEmpty() || queries.get(0).isBlank()) {
+            return List.of();
+        }
+        String query = queries.get(0);
+
+        List<Document> docs;
+        if (hybridConfig.isEnabled()) {
+            // ===== Level 2/3：混合检索 + RRF =====
+            List<HybridSearchService.HybridHit> hybridHits = hybridSearchService.search(
+                query, knowledgeBaseIds,
+                hybridConfig.getRecallTopK(),
+                hybridConfig.getRecallPerPath(),
+                hybridConfig.getRrfK()
+            );
+            if (hybridHits.isEmpty()) {
+                docs = List.of();
+            } else {
+                List<Document> candidates = fetchDocumentTextsByIds(hybridHits);
+                if (shouldRerank(query, candidates.size(), userRerankOverride)) {
+                    // Level 3：精排，用 rerankConfig.finalTopN
+                    log.info("Level 3 精排: query='{}', 候选={} 条, topN={}",
+                        query, candidates.size(), rerankConfig.getFinalTopN());
+                    docs = rerankService.rerank(query, candidates, rerankConfig.getFinalTopN());
+                } else {
+                    // Level 2：RRF 排序结果，用 hybridConfig.finalTopN（不依赖 rerank 配置）
+                    log.info("Level 2 混合+RRF: query='{}', 候选={} 条, topN={}",
+                        query, candidates.size(), hybridConfig.getFinalTopN());
+                    docs = orderByRrf(candidates, hybridHits, hybridConfig.getFinalTopN());
+                }
             }
-            List<Document> docs = vectorService.similaritySearch(
-                candidateQuery,
-                knowledgeBaseIds,
-                queryContext.searchParams().topK(),
+        } else {
+            // ===== Level 1：纯向量（兜底），固定条数，废弃动态 topK =====
+            log.info("Level 1 纯向量检索: query='{}', topK={}", query, hybridConfig.getFinalTopN());
+            docs = vectorService.similaritySearch(
+                query, knowledgeBaseIds,
+                hybridConfig.getFinalTopN(),
                 queryContext.searchParams().minScore()
             );
-            log.info("检索候选 query='{}'，命中 {} 条", candidateQuery, docs.size());
-            if (hasEffectiveHit(candidateQuery, docs)) {
-                return docs;
-            }
         }
-        return List.of();
+
+        log.info("检索 query='{}'，命中 {} 条", query, docs.size());
+        return docs;
+    }
+
+    // ==================== Reranker 闸门 + 辅助方法 ====================
+
+    /**
+     * 场景化三道闸门判断是否走精排
+     *
+     * <p>闸门优先级：接口级显式开关 > 全局总开关 > 场景自动跳过</p>
+     *
+     * @param query          用户原始问题
+     * @param candidateCount 候选文档数
+     * @param userOverride   接口级开关：null=默认策略，true=强制开启，false=强制关闭
+     * @return true=走精排，false=跳过精排
+     */
+    boolean shouldRerank(String query, int candidateCount, Boolean userOverride) {
+        // 闸门 3：接口级显式开关优先
+        if (userOverride != null) {
+            if (!userOverride) {
+                log.info("rerank 跳过：接口级强制关闭");
+                return false;
+            }
+            // userOverride=true：跳过闸门 1（全局开关）和闸门 2 的场景判断，
+            // 但候选数门槛是硬性条件，必须检查
+            if (candidateCount <= rerankConfig.getMinCandidatesForRerank()) {
+                log.info("rerank 跳过：强制开启但候选数不足 ({}<={})",
+                    candidateCount, rerankConfig.getMinCandidatesForRerank());
+                return false;
+            }
+            return true;
+        }
+        // 闸门 1：全局总开关
+        if (!rerankConfig.isEnabled()) {
+            log.info("rerank 跳过：全局开关关闭");
+            return false;
+        }
+        // 闸门 2：场景自动跳过
+        if (candidateCount <= rerankConfig.getMinCandidatesForRerank()) {
+            log.info("rerank 跳过：候选数不足 ({}<={})",
+                candidateCount, rerankConfig.getMinCandidatesForRerank());
+            return false;
+        }
+        if (rerankConfig.isSkipShortQuery() && isShortQuery(query)) {
+            log.info("rerank 跳过：短问题 '{}'", query);
+            return false;
+        }
+        if (matchesSkipPattern(query)) {
+            log.info("rerank 跳过：命中 skipPattern '{}'", query);
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * 按 RRF 分数显式降序排序候选文档
+     *
+     * <p>⚠️ {@code fetchDocumentTextsByIds} 内部 SQL {@code WHERE id IN (...)} 不保证返回顺序，
+     * 本方法必须显式按 {@code hybridHits} 中的 {@code rrfScore} 降序重新映射。</p>
+     */
+    List<Document> orderByRrf(List<Document> docs, List<HybridSearchService.HybridHit> hits, int topN) {
+        if (docs == null || docs.isEmpty() || hits == null || hits.isEmpty()) {
+            return List.of();
+        }
+        // 构建 chunkId → Document 映射
+        Map<String, Document> docMap = docs.stream()
+            .collect(Collectors.toMap(Document::getId, d -> d, (a, b) -> a));
+        // 按 hybridHits 的 rrfScore 降序取 topN
+        return hits.stream()
+            .sorted(Comparator.comparingDouble(HybridSearchService.HybridHit::rrfScore).reversed())
+            .limit(topN)
+            .map(h -> docMap.get(h.chunkId()))
+            .filter(Objects::nonNull)
+            .toList();
+    }
+
+    /**
+     * 根据 HybridHit 列表批量查原始 Document（含文本 + metadata）
+     *
+     * <p>供 Reranker 和 orderByRrf 使用：混合检索只返回 chunkId + rrfScore，
+     * 需要通过本方法查出完整文本和 metadata 才能送给 rerank API 和拼接 Prompt。</p>
+     */
+    List<Document> fetchDocumentTextsByIds(List<HybridSearchService.HybridHit> hits) {
+        if (hits == null || hits.isEmpty()) {
+            return List.of();
+        }
+        List<String> chunkIds = hits.stream()
+            .map(HybridSearchService.HybridHit::chunkId)
+            .toList();
+        return vectorService.findByIds(chunkIds);
+    }
+
+    /**
+     * 判断是否为短问题（去空格后字符数 ≤ shortQueryThreshold）
+     */
+    private boolean isShortQuery(String query) {
+        if (query == null) {
+            return false;
+        }
+        String compact = query.replaceAll("\\s+", "");
+        return compact.length() <= rerankConfig.getShortQueryThreshold();
+    }
+
+    /**
+     * 判断 query 是否命中 skipPatterns 正则（如纯英文缩写 JVM、GC、OOM）
+     */
+    private boolean matchesSkipPattern(String query) {
+        if (query == null || compiledSkipPatterns == null || compiledSkipPatterns.isEmpty()) {
+            return false;
+        }
+        return compiledSkipPatterns.stream().anyMatch(p -> p.matcher(query).matches());
     }
 
     private SearchParams resolveSearchParams(String question) {
@@ -452,10 +659,10 @@ public class KnowledgeBaseQueryService {
         });
     }
 
-    private record SearchParams(int topK, double minScore) {
+    record SearchParams(int topK, double minScore) {
     }
 
-    private record QueryContext(String originalQuestion, List<String> candidateQueries, SearchParams searchParams) {
+    record QueryContext(String originalQuestion, List<String> candidateQueries, SearchParams searchParams) {
     }
 }
 
