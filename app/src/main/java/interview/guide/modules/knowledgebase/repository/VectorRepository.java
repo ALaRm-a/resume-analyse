@@ -89,6 +89,48 @@ public class VectorRepository {
         return result;
     }
 
+    /**
+     * 批量根据 chunk ID 查询完整文档（含 metadata JSON）
+     *
+     * <p>与 {@link #findByIds} 的区别：本方法额外返回 metadata 字段（JSON 字符串），
+     * 供 Service 层构建 Spring AI {@link org.springframework.ai.document.Document} 对象。
+     * SQL WHERE IN <b>不保证返回顺序</b>，调用方需自行按需排序。</p>
+     *
+     * @param chunkIds UUID 格式的 chunk ID 列表
+     * @return 含 id + content + metadataJson 的记录列表（顺序不确定）
+     */
+    public List<VectorDocument> findDocumentsByIds(List<String> chunkIds) {
+        if (chunkIds == null || chunkIds.isEmpty()) {
+            return List.of();
+        }
+        String placeholders = chunkIds.stream().map(id -> "?").collect(Collectors.joining(","));
+        String sql = "SELECT id, content, metadata::text AS metadata_json "
+                + "FROM vector_store WHERE CAST(id AS text) IN (" + placeholders + ")";
+
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, chunkIds.toArray());
+        List<VectorDocument> result = new ArrayList<>(rows.size());
+        for (Map<String, Object> row : rows) {
+            Object idObj = row.get("id");
+            String id = idObj != null ? idObj.toString() : null;
+            String content = (String) row.get("content");
+            String metadataJson = (String) row.get("metadata_json");
+            if (id != null && content != null) {
+                result.add(new VectorDocument(id, content, metadataJson));
+            }
+        }
+        log.info("批量查询 chunk 文档: 请求 {} 个, 命中 {} 个", chunkIds.size(), result.size());
+        return result;
+    }
+
+    /**
+     * vector_store 中的 chunk 完整记录（含 metadata JSON 字符串）
+     *
+     * @param id           chunk UUID
+     * @param content      文本内容
+     * @param metadataJson metadata 的 JSON 字符串（可能为 null）
+     */
+    public record VectorDocument(String id, String content, String metadataJson) {}
+
     @Transactional(rollbackFor = Exception.class)
     public int deleteByKnowledgeBaseId(Long knowledgeBaseId) {
         log.info("开始删除知识库向量数据: kbId={}", knowledgeBaseId);
