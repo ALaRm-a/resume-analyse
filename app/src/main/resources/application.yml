@@ -92,6 +92,28 @@ app:
         topk-long: ${APP_AI_RAG_TOPK_LONG:8}
         min-score-short: ${APP_AI_RAG_MIN_SCORE_SHORT:0.18}
         min-score-default: ${APP_AI_RAG_MIN_SCORE_DEFAULT:0.28}
+      # 混合检索（BM25 + 向量 + RRF 融合）配置，与 rerank 解耦
+      hybrid:
+        enabled: ${APP_AI_RAG_HYBRID_ENABLED:true}
+        recall-per-path: ${APP_AI_RAG_HYBRID_RECALL_PER_PATH:30}
+        recall-topk: ${APP_AI_RAG_HYBRID_RECALL_TOPK:30}
+        final-top-n: ${APP_AI_RAG_HYBRID_FINAL_TOP_N:5}      # Level 1/2 输出条数
+        rrf-k: ${APP_AI_RAG_HYBRID_RRF_K:60}
+      # 精排（qwen3-rerank）配置，依赖 hybrid 启用
+      rerank:
+        enabled: ${APP_AI_RAG_RERANK_ENABLED:true}
+        model: ${APP_AI_RAG_RERANK_MODEL:qwen3-rerank}
+        endpoint: ${APP_AI_RAG_RERANK_ENDPOINT:https://dashscope.aliyuncs.com/compatible-api/v1/reranks}
+        instruct: ${APP_AI_RAG_RERANK_INSTRUCT:Given a web search query, retrieve relevant passages that answer the query.}
+        final-top-n: ${APP_AI_RAG_RERANK_FINAL_TOP_N:5}      # Level 3 输出条数
+        max-documents-per-call: ${APP_AI_RAG_RERANK_MAX_DOCS:500}
+        connect-timeout: ${APP_AI_RAG_RERANK_CONNECT_TIMEOUT:5000}
+        read-timeout: ${APP_AI_RAG_RERANK_READ_TIMEOUT:30000}
+        min-candidates-for-rerank: ${APP_AI_RAG_RERANK_MIN_CANDIDATES:8}
+        skip-short-query: ${APP_AI_RAG_RERANK_SKIP_SHORT_QUERY:true}
+        short-query-threshold: ${APP_AI_RAG_RERANK_SHORT_QUERY_THRESHOLD:6}
+        skip-patterns:
+          - "^[A-Za-z0-9]{1,10}$"   # 纯英文缩写，如 JVM、GC、OOM
   interview:
     follow-up-count: ${APP_INTERVIEW_FOLLOW_UP_COUNT:1}
     evaluation:
