@@ -2,6 +2,8 @@ package interview.guide.modules.knowledgebase.evaluation;
 
 import interview.guide.modules.knowledgebase.bm25.BM25SearchService;
 import interview.guide.modules.knowledgebase.bm25.HybridSearchService;
+import interview.guide.modules.knowledgebase.rerank.DashScopeRerankService;
+import interview.guide.modules.knowledgebase.repository.VectorRepository;
 import interview.guide.modules.knowledgebase.service.KnowledgeBaseVectorService;
 import org.junit.jupiter.api.*;
 import org.springframework.ai.document.Document;
@@ -10,6 +12,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * RAG 全量检索评测 — 4 主题 102 正例 + 21 负例，输出 Recall@5 / Precision@5 / NDCG@5 / MRR
@@ -49,6 +52,12 @@ class FullEvaluationTest {
 
     @Autowired
     private HybridSearchService hybridSearchService;
+
+    @Autowired
+    private VectorRepository vectorRepository;
+
+    @Autowired
+    private DashScopeRerankService rerankService;
 
     // ==================== 正例题 ====================
 
@@ -143,7 +152,7 @@ class FullEvaluationTest {
         System.out.printf("Precision@%d: %.2f\n", K, avgPrec);
         System.out.printf("NDCG@%d:      %.2f\n", K, avgNdcg);
         System.out.printf("MRR:          %.2f\n", avgMrr);
-        System.out.printf("总命中:        %d / %d\n", totalHits, totalExpected);
+        System.out.printf("chunk级命中(微平均): %d / %d\n", totalHits, totalExpected);
         System.out.println("═══════════════════════════════════════\n");
     }
 
@@ -247,7 +256,7 @@ class FullEvaluationTest {
         System.out.printf("Precision@%d: %.2f\n", K, avgPrec);
         System.out.printf("NDCG@%d:      %.2f\n", K, avgNdcg);
         System.out.printf("MRR:          %.2f\n", avgMrr);
-        System.out.printf("总命中:        %d / %d\n", totalHits, totalExpected);
+        System.out.printf("chunk级命中(微平均): %d / %d\n", totalHits, totalExpected);
         System.out.println("═══════════════════════════════════════════\n");
     }
 
@@ -293,6 +302,205 @@ class FullEvaluationTest {
             totals[4] / topicCount, totals[5] / topicCount,
             totals[6] / topicCount, totals[7] / topicCount);
         System.out.println();
+    }
+
+    // ==================== BM25 vs Vector 逐题差异诊断 ====================
+
+    @Test
+    @DisplayName("BM25 vs Vector 逐题差异诊断分析")
+    void diagnoseBm25VectorGap() {
+        System.out.println("\n╔══════════════════════════════════════════════════════════════════════════╗");
+        System.out.println("║           BM25 vs Vector 逐题差异诊断分析                                 ║");
+        System.out.println("╚══════════════════════════════════════════════════════════════════════════╝\n");
+
+        var allTopics = Map.of("JUC", JUC, "JVM", JVM, "Redis", REDIS, "RocketMQ", ROCKETMQ);
+
+        // 收集所有需查询的 chunk ID → 批量获取文本内容
+        record CaseSnapshot(String topic, KbTestCase tc, Set<String> bm25Ids, Set<String> vecIds,
+                            Set<String> gtIds, List<BM25SearchService.Bm25Hit> bm25Hits,
+                            List<Document> vecDocs) {}
+        List<CaseSnapshot> allSnapshots = new ArrayList<>();
+
+        // 第一遍：跑 BM25 + 向量，收集所有 snapshot
+        for (var entry : allTopics.entrySet()) {
+            for (KbTestCase tc : entry.getValue()) {
+                List<BM25SearchService.Bm25Hit> bm25Hits = bm25SearchService.search(tc.question, tc.kbIds, K);
+                List<Document> vecDocs = vectorService.similaritySearch(tc.question, tc.kbIds, K, MIN_SCORE);
+
+                Set<String> bm25Ids = bm25Hits.stream().limit(K).map(BM25SearchService.Bm25Hit::chunkId).collect(Collectors.toSet());
+                Set<String> vecIds = vecDocs.stream().limit(K).map(Document::getId).collect(Collectors.toSet());
+                Set<String> gtIds = new HashSet<>(tc.groundTruthIds);
+
+                allSnapshots.add(new CaseSnapshot(entry.getKey(), tc, bm25Ids, vecIds, gtIds, bm25Hits, vecDocs));
+            }
+        }
+
+        // 批量加载所有涉及的 chunk 文本
+        Set<String> allChunkIds = new LinkedHashSet<>();
+        for (CaseSnapshot snap : allSnapshots) {
+            allChunkIds.addAll(snap.bm25Ids);
+            allChunkIds.addAll(snap.vecIds);
+            allChunkIds.addAll(snap.gtIds);
+        }
+        Map<String, String> chunkTexts = vectorRepository.findByIds(new ArrayList<>(allChunkIds));
+
+        // 第二遍：分类统计
+        List<GapCase> bm25FailVecPass = new ArrayList<>();
+        List<GapCase> vecFailBm25Pass = new ArrayList<>();
+        List<GapCase> bothFail = new ArrayList<>();
+        int bothPass = 0;
+
+        for (CaseSnapshot snap : allSnapshots) {
+            Set<String> bm25GtOverlap = new HashSet<>(snap.bm25Ids);
+            bm25GtOverlap.retainAll(snap.gtIds);
+            Set<String> vecGtOverlap = new HashSet<>(snap.vecIds);
+            vecGtOverlap.retainAll(snap.gtIds);
+
+            boolean bm25Ok = !bm25GtOverlap.isEmpty();
+            boolean vecOk = !vecGtOverlap.isEmpty();
+
+            if (bm25Ok && vecOk) {
+                bothPass++;
+            } else if (!bm25Ok && vecOk) {
+                bm25FailVecPass.add(new GapCase(snap.topic, snap.tc.id, snap.tc.question,
+                    snap.tc.groundTruthIds, snap.bm25Hits, snap.vecDocs));
+            } else if (bm25Ok && !vecOk) {
+                vecFailBm25Pass.add(new GapCase(snap.topic, snap.tc.id, snap.tc.question,
+                    snap.tc.groundTruthIds, snap.bm25Hits, snap.vecDocs));
+            } else {
+                bothFail.add(new GapCase(snap.topic, snap.tc.id, snap.tc.question,
+                    snap.tc.groundTruthIds, snap.bm25Hits, snap.vecDocs));
+            }
+        }
+
+        // 统计摘要
+        int total = allSnapshots.size();
+        System.out.println("=== 分类统计 ===");
+        System.out.printf("Both Pass (BM25√ Vector√):        %2d  (%.0f%%)\n", bothPass, 100.0 * bothPass / total);
+        System.out.printf("BM25 Fails / Vector Passes:        %2d  (%.0f%%)  ← 重点关注\n", bm25FailVecPass.size(), 100.0 * bm25FailVecPass.size() / total);
+        System.out.printf("BM25 Passes / Vector Fails:        %2d  (%.0f%%)\n", vecFailBm25Pass.size(), 100.0 * vecFailBm25Pass.size() / total);
+        System.out.printf("Both Fail:                         %2d  (%.0f%%)\n", bothFail.size(), 100.0 * bothFail.size() / total);
+        System.out.println();
+
+        // === 详细分析：BM25 未命中但向量命中 ===
+        if (bm25FailVecPass.isEmpty()) {
+            System.out.println("=== 无 BM25 失败但向量成功的题目，两个方案覆盖一致 ===");
+        } else {
+            System.out.println("═".repeat(100));
+            System.out.println("        BM25 未命中但向量命中 — 详细诊断 (" + bm25FailVecPass.size() + " 题)");
+            System.out.println("═".repeat(100));
+
+            for (GapCase g : bm25FailVecPass) {
+                System.out.println("\n┌─────────────────────────────────────────────────────────────────");
+                System.out.printf("│ [%s-%s] %s\n", g.topic, g.id, g.question);
+                System.out.println("├─ Ground Truth Chunk(s):");
+
+                for (String gtId : g.gtIds) {
+                    String gtContent = chunkTexts.getOrDefault(gtId, "<未找到文本>");
+                    System.out.printf("│   [%s] %s\n", gtId.substring(0, 8), trunc(gtContent, 70));
+                }
+
+                System.out.println("├─ BM25 Top-5 (未命中 → ✗):");
+                for (int i = 0; i < Math.min(K, g.bm25Hits.size()); i++) {
+                    BM25SearchService.Bm25Hit hit = g.bm25Hits.get(i);
+                    String cid = hit.chunkId().substring(0, 8);
+                    boolean inGt = g.gtIds.contains(hit.chunkId());
+                    String chunkContent = chunkTexts.getOrDefault(hit.chunkId(), "");
+                    System.out.printf("│   [%d] %s  score=%.2f %s %s\n",
+                        i + 1, cid, hit.score(), inGt ? "✓" : " ",
+                        trunc(chunkContent, 50));
+                }
+
+                System.out.println("├─ Vector Top-5 (命中 → ✓):");
+                List<Document> vecDocsLimited = g.vecDocs.subList(0, Math.min(K, g.vecDocs.size()));
+                for (int i = 0; i < vecDocsLimited.size(); i++) {
+                    Document doc = vecDocsLimited.get(i);
+                    String cid = doc.getId().substring(0, 8);
+                    boolean inGt = g.gtIds.contains(doc.getId());
+                    double simScore = 0;
+                    try {
+                        Object dist = doc.getMetadata().get("distance");
+                        simScore = dist != null ? 1 - (double) dist : 0;
+                    } catch (Exception ignored) {}
+                    System.out.printf("│   [%d] %s  sim=%.2f %s %s\n",
+                        i + 1, cid, simScore, inGt ? "✓" : " ",
+                        trunc(doc.getText(), 50));
+                }
+
+                // 根因判断
+                String rootCause = diagnoseRootCause(g, chunkTexts);
+                System.out.printf("├─ 根因判断: %s\n", rootCause);
+                System.out.println("└─────────────────────────────────────────────────────────────────");
+            }
+        }
+
+        // === 简洁列举：Both Fail ===
+        if (!bothFail.isEmpty()) {
+            System.out.println("\n=== Both Fail 题目列表 (" + bothFail.size() + " 题) ===");
+            for (GapCase g : bothFail) {
+                System.out.printf("  [%s-%s] %s\n", g.topic, g.id, g.question);
+                System.out.printf("    GT: %s\n", truncIds(g.gtIds));
+            }
+        }
+
+        // === 最终汇总 ===
+        System.out.println("\n═══════════════════════════════════════════════════");
+        System.out.println("  BM25 vs Vector 差异诊断完成");
+        System.out.printf("  总题数: %d | BothPass: %d | B→✗V→✓: %d | B→✓V→✗: %d | BothFail: %d\n",
+            total, bothPass, bm25FailVecPass.size(), vecFailBm25Pass.size(), bothFail.size());
+        System.out.println("═══════════════════════════════════════════════════\n");
+    }
+
+    /** 根据 query/groud truth/检索结果初步判断 BM25 未命中的根因 */
+    private String diagnoseRootCause(GapCase g, Map<String, String> chunkTexts) {
+        // 分类标签: R1/R2/R3 开头 = 改述类题目
+        String id = g.id.toUpperCase();
+        if (id.startsWith("R")) {
+            return "语义改述型题目 — BM25 关键词匹配天然劣势，gap 合理";
+        }
+
+        // 检查 ground truth chunk 中是否包含 query 的核心关键词
+        String query = g.question.toLowerCase();
+        boolean hasKeywordOverlap = false;
+        for (String gtId : g.gtIds) {
+            String content = chunkTexts.getOrDefault(gtId, "").toLowerCase();
+            // 提取 query 中的技术关键词（英文缩写 + 中文核心词）
+            String[] keywords = extractKeywords(g.question);
+            for (String kw : keywords) {
+                if (content.contains(kw.toLowerCase())) {
+                    hasKeywordOverlap = true;
+                    break;
+                }
+            }
+            if (hasKeywordOverlap) break;
+        }
+
+        if (!hasKeywordOverlap) {
+            return "GT chunk 缺少 query 核心关键词 → 标注/分块问题";
+        }
+
+        // 检查 BM25 排名：GT 是否在 BM25 的 top-K 之外（如第6-10名）
+        // 当前只看 top-5，所以：如果 GT 有关键词但未出在 top-5 → 排序问题
+        return "GT 含关键词但 BM25 排名未进 Top-5 → 排序/参数问题";
+    }
+
+    /** 从问题中提取技术关键词（英文缩写 + 中文核心词） */
+    private static String[] extractKeywords(String question) {
+        // 提取常见 Java 技术术语
+        List<String> keywords = new ArrayList<>();
+        // 英文缩写/术语（>2个字符的大写字母组合或驼峰词）
+        String[] words = question.split("[\\s，。？,?.!]+");
+        for (String w : words) {
+            w = w.trim();
+            if (w.length() >= 2 && w.matches(".*[A-Z].*") && !w.matches("^[\\u4e00-\\u9fa5]+$")) {
+                keywords.add(w);
+            }
+            // 中文核心词（>3 字的连续中文字符）
+            if (w.length() > 6 && w.matches("^[\\u4e00-\\u9fa5]+$")) {
+                keywords.add(w);
+            }
+        }
+        return keywords.toArray(new String[0]);
     }
 
     // ==================== RRF 混合检索评测 ====================
@@ -354,7 +562,7 @@ class FullEvaluationTest {
         System.out.printf("Precision@%d: %.2f\n", K, rrfPrec);
         System.out.printf("NDCG@%d:      %.2f\n", K, rrfNdcg);
         System.out.printf("MRR:          %.2f\n", rrfMrr);
-        System.out.printf("总命中:        %d / %d\n", hybridHits, hybridExpected);
+        System.out.printf("chunk级命中(微平均): %d / %d\n", hybridHits, hybridExpected);
         System.out.println("═══════════════════════════════════════════════\n");
 
         // 打印提升幅度
@@ -427,7 +635,69 @@ class FullEvaluationTest {
         System.out.printf("Precision@%d: %.2f\n", K, bestPrec);
         System.out.printf("NDCG@%d:      %.2f\n", K, bestNdcg);
         System.out.printf("MRR:          %.2f\n", bestMrr);
-        System.out.printf("总命中:        %d / %d\n", bestHits, bestExpected);
+        System.out.printf("chunk级命中(微平均): %d / %d\n", bestHits, bestExpected);
+        System.out.println("═══════════════════════════════════════════════\n");
+    }
+
+    // ==================== 四路对比（向量 vs BM25 vs RRF vs RRF+Rerank） ====================
+
+    @Test
+    @DisplayName("四路对比：向量 vs BM25 vs RRF vs RRF+Rerank")
+    void evaluateFourWayComparison() {
+        System.out.println("\n╔════════════════════════════════════════════════════════════════════════════════╗");
+        System.out.println("║    四路对比：向量 vs BM25 vs RRF混合 vs RRF+Rerank精排                          ║");
+        System.out.println("╚════════════════════════════════════════════════════════════════════════════════╝\n");
+
+        System.out.printf("%-10s | %7s | %7s | %7s | %7s | %7s | %7s | %7s | %7s | %7s | %7s | %7s | %7s | %7s | %7s\n",
+            "主题", "V-R", "B-R", "H-R", "HR-R", "V-P", "B-P", "H-P", "HR-P", "V-N", "B-N", "H-N", "HR-N", "H-M", "HR-M");
+        System.out.println("-".repeat(170));
+
+        // V=Vector, B=BM25, H=Hybrid(RRF), HR=Hybrid+Rerank
+        // R=Recall, P=Precision, N=NDCG, M=MRR
+        double sumVR=0, sumBR=0, sumHR_rerankR=0;
+        double sumVN=0, sumHN=0, sumHRN=0;
+        double sumHM=0, sumHRM=0;
+        int topicCount = 0;
+
+        for (var entry : Map.of("JUC", JUC, "JVM", JVM, "Redis", REDIS, "RocketMQ", ROCKETMQ).entrySet()) {
+            TopicSummary vs = runTopic(entry.getKey(), entry.getValue());
+            TopicSummary bs = runTopicBm25(entry.getKey(), entry.getValue());
+            TopicSummary hs = runTopicHybrid(entry.getKey(), entry.getValue(),
+                HybridSearchService.DEFAULT_RECALL_PER_PATH, HybridSearchService.DEFAULT_RRF_K);
+            TopicSummary hrs = runTopicHybridRerank(entry.getKey(), entry.getValue(),
+                HybridSearchService.DEFAULT_RECALL_PER_PATH, HybridSearchService.DEFAULT_RRF_K);
+
+            System.out.printf("%-10s | %7.2f | %7.2f | %7.2f | %7.2f | %7.2f | %7.2f | %7.2f | %7.2f | %7.2f | %7.2f | %7.2f | %7.2f | %7.2f | %7.2f\n",
+                entry.getKey(),
+                vs.avgRecall, bs.avgRecall, hs.avgRecall, hrs.avgRecall,
+                vs.avgPrecision, bs.avgPrecision, hs.avgPrecision, hrs.avgPrecision,
+                vs.avgNdcg, bs.avgNdcg, hs.avgNdcg, hrs.avgNdcg,
+                hs.avgMrr, hrs.avgMrr);
+
+            sumVR += vs.avgRecall; sumBR += bs.avgRecall; sumHR_rerankR += hrs.avgRecall;
+            sumVN += vs.avgNdcg; sumHN += hs.avgNdcg; sumHRN += hrs.avgNdcg;
+            sumHM += hs.avgMrr; sumHRM += hrs.avgMrr;
+            topicCount++;
+        }
+
+        System.out.println("-".repeat(170));
+        System.out.printf("%-10s | %7.2f | %7.2f | %7.2f | %7.2f | %7s | %7s | %7s | %7s | %7.2f | %7s | %7.2f | %7.2f | %7.2f | %7.2f\n",
+            "平均",
+            sumVR/topicCount, sumBR/topicCount, sumHN/topicCount, sumHR_rerankR/topicCount,
+            "-", "-", "-", "-",
+            sumVN/topicCount, "-", sumHN/topicCount, sumHRN/topicCount,
+            sumHM/topicCount, sumHRM/topicCount);
+        System.out.println();
+
+        // Rerank 提升幅度
+        double rrfNdcg = sumHN / topicCount;
+        double rerankNdcg = sumHRN / topicCount;
+        double rrfMrr = sumHM / topicCount;
+        double rerankMrr = sumHRM / topicCount;
+
+        System.out.println("══════════════ RRF+Rerank 精排提升 ══════════════");
+        System.out.printf("NDCG@%d: RRF=%.2f → Rerank=%.2f (%+.2f)\n", K, rrfNdcg, rerankNdcg, rerankNdcg - rrfNdcg);
+        System.out.printf("MRR:     RRF=%.2f → Rerank=%.2f (%+.2f)\n", rrfMrr, rerankMrr, rerankMrr - rrfMrr);
         System.out.println("═══════════════════════════════════════════════\n");
     }
 
@@ -442,6 +712,58 @@ class FullEvaluationTest {
                 .map(HybridSearchService.HybridHit::chunkId)
                 .limit(K)
                 .toList();
+            Set<String> gt = new HashSet<>(tc.groundTruthIds);
+            Set<String> topKSet = new HashSet<>(retrieved);
+            topKSet.retainAll(gt);
+            int matched = topKSet.size();
+            rows.add(new EvalRow(tc.id, tc.question, matched, gt.size(),
+                computeRecall(gt, matched), computePrecision(matched),
+                computeNDCG(retrieved, gt), computeMRR(retrieved, gt),
+                retrieved, tc.groundTruthIds));
+        }
+        double rec = rows.stream().mapToDouble(r -> r.recall).average().orElse(0);
+        double prec = rows.stream().mapToDouble(r -> r.precision).average().orElse(0);
+        double ndcg = rows.stream().mapToDouble(r -> r.ndcg).average().orElse(0);
+        double mrr = rows.stream().mapToDouble(r -> r.mrr).average().orElse(0);
+        int hits = rows.stream().mapToInt(r -> r.hits).sum();
+        int expected = rows.stream().mapToInt(r -> r.expectedTotal).sum();
+        return new TopicSummary(name, rec, prec, ndcg, mrr, hits, expected, rows);
+    }
+
+    /**
+     * RRF 混合检索 + qwen3-rerank 精排评测
+     *
+     * <p>流水线：HybridSearchService.search() → vectorService.findByIds() → rerankService.rerank()
+     * 注意：需要配置 AI_BAILIAN_API_KEY，否则 rerank 降级为 RRF 前 N 条</p>
+     */
+    private TopicSummary runTopicHybridRerank(String name, List<KbTestCase> cases, int recallPerPath, int rrfK) {
+        List<EvalRow> rows = new ArrayList<>();
+        for (KbTestCase tc : cases) {
+            // 1. 混合检索 + RRF 融合
+            List<HybridSearchService.HybridHit> hits = hybridSearchService.search(
+                tc.question, tc.kbIds, K, recallPerPath, rrfK);
+
+            if (hits.isEmpty()) {
+                rows.add(new EvalRow(tc.id, tc.question, 0, tc.groundTruthIds.size(),
+                    0, 0, 0, 0, List.of(), tc.groundTruthIds));
+                continue;
+            }
+
+            // 2. 批量查原始 Document（含文本 + metadata）
+            List<String> chunkIds = hits.stream()
+                .map(HybridSearchService.HybridHit::chunkId)
+                .toList();
+            List<Document> candidates = vectorService.findByIds(chunkIds);
+
+            // 3. qwen3-rerank 精排
+            List<Document> ranked = rerankService.rerank(tc.question, candidates, K);
+
+            // 4. 提取 retrieved IDs 计算指标
+            List<String> retrieved = ranked.stream()
+                .map(Document::getId)
+                .limit(K)
+                .toList();
+
             Set<String> gt = new HashSet<>(tc.groundTruthIds);
             Set<String> topKSet = new HashSet<>(retrieved);
             topKSet.retainAll(gt);
@@ -596,6 +918,9 @@ class FullEvaluationTest {
     // ==================== 数据类 ====================
     // record语法糖快速定义类的属性和其他的构造方法
     record KbTestCase(String id, String question, List<Long> kbIds, List<String> groundTruthIds) {}
+
+    record GapCase(String topic, String id, String question, List<String> gtIds,
+                   List<BM25SearchService.Bm25Hit> bm25Hits, List<Document> vecDocs) {}
 
     record TopicSummary(String name, double avgRecall, double avgPrecision, double avgNdcg, double avgMrr,
                         int totalHits, int totalExpected, List<EvalRow> rows) {}
