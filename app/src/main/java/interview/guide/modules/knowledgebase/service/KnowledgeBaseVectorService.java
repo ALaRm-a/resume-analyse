@@ -3,6 +3,8 @@ package interview.guide.modules.knowledgebase.service;
 import interview.guide.modules.knowledgebase.bm25.BM25IndexService;
 import interview.guide.modules.knowledgebase.repository.VectorRepository;
 import interview.guide.modules.knowledgebase.util.RecursiveCharacterSplitter;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
@@ -10,6 +12,7 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -49,13 +52,16 @@ public class KnowledgeBaseVectorService {
     private final VectorRepository vectorRepository;
     private final BM25IndexService bm25IndexService;
     private final RecursiveCharacterSplitter splitter;
+    private final ObjectMapper objectMapper;
 
     public KnowledgeBaseVectorService(VectorStore vectorStore,
                                        VectorRepository vectorRepository,
-                                       BM25IndexService bm25IndexService) {
+                                       BM25IndexService bm25IndexService,
+                                       ObjectMapper objectMapper) {
         this.vectorStore = vectorStore;
         this.vectorRepository = vectorRepository;
         this.bm25IndexService = bm25IndexService;
+        this.objectMapper = objectMapper;
         this.splitter = new RecursiveCharacterSplitter(CHUNK_SIZE_CHARS, CHUNK_OVERLAP_CHARS, MAX_NUM_CHUNKS);
     }
     /**
@@ -232,6 +238,52 @@ public class KnowledgeBaseVectorService {
             bm25IndexService.deleteAllByKbId(knowledgeBaseId);
         } catch (Exception e) {
             log.error("删除 BM25 索引失败: kbId={}, error={}", knowledgeBaseId, e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 根据 chunk ID 列表批量查询完整 Document（含文本 + metadata）
+     *
+     * <p>供 Reranker 精排使用：混合检索返回 {@code List<HybridHit>}（只有 chunkId），
+     * 需要通过本方法查出完整文本和 metadata，才能送给 rerank API 和拼接 Prompt。</p>
+     *
+     * <p><b>注意</b>：SQL {@code WHERE id IN (...)} <b>不保证返回顺序</b>等于传入顺序。
+     * 调用方（如 {@code orderByRrf}）需自行按需排序，不能依赖本方法的返回顺序。</p>
+     *
+     * @param chunkIds UUID 格式的 chunk ID 列表
+     * @return Spring AI Document 列表（含 metadata 中的 kb_id 等字段），顺序不确定
+     */
+    public List<Document> findByIds(List<String> chunkIds) {
+        if (chunkIds == null || chunkIds.isEmpty()) {
+            return List.of();
+        }
+
+        List<VectorRepository.VectorDocument> vectorDocs = vectorRepository.findDocumentsByIds(chunkIds);
+
+        return vectorDocs.stream()
+                .map(vd -> {
+                    Map<String, Object> metadata = parseMetadataJson(vd.metadataJson());
+                    return Document.builder()
+                            .id(vd.id())
+                            .text(vd.content())
+                            .metadata(metadata)
+                            .build();
+                })
+                .toList();
+    }
+
+    /**
+     * 解析 metadata JSON 字符串为 Map，失败时返回空 Map
+     */
+    private Map<String, Object> parseMetadataJson(String json) {
+        if (json == null || json.isBlank()) {
+            return new HashMap<>();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+        } catch (Exception e) {
+            log.warn("解析 metadata JSON 失败: json={}, error={}", json, e.getMessage());
+            return new HashMap<>();
         }
     }
 }
