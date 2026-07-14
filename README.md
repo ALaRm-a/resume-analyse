@@ -52,9 +52,10 @@ InterviewGuide 是一个集成了简历分析、模拟面试和知识库管理�
 | Spring Boot           | 4.0   | 应用框架                  |
 | Java                  | 21    | 开发语言                  |
 | Spring AI             | 2.0   | AI 集成框架               |
-| PostgreSQL + pgvector | 14+   | 关系数据库 + 向量存储     |
+| PostgreSQL + pgvector | 14+   | 关系数据库 + 向量存储（HNSW 索引） |
 | Redis                 | 6+    | 缓存 + 消息队列（Stream） |
 | Apache Tika           | 2.9.2 | 文档解析                  |
+| HanLP                 | 1.8.6 | 中文分词（BM25 检索）     |
 | iText 8               | 8.0.5 | PDF 导出                  |
 | MapStruct             | 1.6.3 | 对象映射                  |
 | Gradle                | 8.14  | 构建工具                  |
@@ -98,8 +99,10 @@ InterviewGuide 是一个集成了简历分析、模拟面试和知识库管理�
 
 ### 知识库管理模块
 
-- **文档智能处理**：支持 PDF、DOCX、Markdown 等多种格式文档的自动上传、分块与异步向量化。
-- **RAG 检索增强**：集成向量数据库，通过检索增强生成（RAG）提升 AI 问答的准确性与专业度。
+- **文档智能处理**：支持 PDF、DOCX、Markdown 等多种格式文档的自动上传、递归字符分块（300 token）与异步向量化。
+- **多级检索架构**：BM25 关键词检索 + 向量语义检索 → RRF 融合 → Reranker 精排（qwen3-rerank），三级可配置降级，Recall@5 达 0.90、NDCG@5 达 0.85。
+- **BM25 倒排索引**：基于 HanLP 中文分词 + 自定义技术词典，自建词频/文档频率/知识库统计三张倒排索引表，实现精准关键词匹配。
+- **Reranker 精排**：引入 cross-encoder 架构对 RRF 融合后的候选文档重排序，NDCG@5 +0.06、MRR +0.09，支持短问题/纯术语自动跳过以节省成本。
 - **流式响应交互**：基于 SSE（Server-Sent Events）技术实现打字机式流式响应。
 - **智能问答对话**：支持基于知识库内容的智能问答，并提供直观的知识库统计信息。
 
@@ -112,6 +115,9 @@ InterviewGuide 是一个集成了简历分析、模拟面试和知识库管理�
 - [x] 添加 API 限流保护
 - [x] 前端性能优化（RAG 聊天 - 虚拟列表）
 - [x] 模拟面试增加追问功能
+- [x] BM25 关键词检索 + 倒排索引
+- [x] BM25 + 向量双路召回 + RRF 融合
+- [x] Reranker 精排（qwen3-rerank）+ 三级检索降级
 - [ ] 打通模拟面试和知识库
 
 ## 效果展示
@@ -171,6 +177,14 @@ interview-guide/
 │   │   └── modules/                  # 业务模块
 │   │       ├── interview/            # 面试模块
 │   │       ├── knowledgebase/        # 知识库模块
+│   │       │   ├── bm25/             # BM25 关键词检索 + RRF 融合
+│   │       │   ├── rerank/           # Reranker 精排
+│   │       │   ├── config/           # BM25 表初始化
+│   │       │   ├── listener/         # 向量化异步消费者
+│   │       │   ├── model/            # 实体/DTO
+│   │       │   ├── repository/       # 数据访问层
+│   │       │   ├── service/          # 核心业务服务
+│   │       │   └── util/             # 分词器、递归切分器
 │   │       └── resume/               # 简历模块
 │   └── src/main/resources/
 │       ├── application.yml           # 应用配置
@@ -268,7 +282,26 @@ app:
     secret-key: ${APP_STORAGE_SECRET_KEY:GtKxV57WJkpw4CvASPBzTy2DYElLnRqh8dIXQa0m}
     bucket: ${APP_STORAGE_BUCKET:interview-guide}
     region: ${APP_STORAGE_REGION:us-east-1}
-
+  ai:
+    rag:
+      # 查询改写开关
+      rewrite:
+        enabled: ${APP_AI_RAG_REWRITE_ENABLED:true}
+      # 混合检索（BM25 + 向量 + RRF 融合）配置
+      hybrid:
+        enabled: ${APP_AI_RAG_HYBRID_ENABLED:true}           # 混合检索总开关，false 则走纯向量检索
+        recall-per-path: ${APP_AI_RAG_HYBRID_RECALL_PER_PATH:30}  # BM25/向量各召回条数
+        recall-topk: ${APP_AI_RAG_HYBRID_RECALL_TOPK:30}     # RRF 融合后截取候选数
+        final-top-n: ${APP_AI_RAG_HYBRID_FINAL_TOP_N:5}      # 非精排路径最终输出条数
+        rrf-k: ${APP_AI_RAG_HYBRID_RRF_K:60}                 # RRF 平滑常数
+      # 精排（qwen3-rerank）配置，依赖 hybrid.enabled=true
+      rerank:
+        enabled: ${APP_AI_RAG_RERANK_ENABLED:true}           # 精排总开关
+        model: ${APP_AI_RAG_RERANK_MODEL:qwen3-rerank}
+        final-top-n: ${APP_AI_RAG_RERANK_FINAL_TOP_N:5}      # 精排后最终输出条数
+        min-candidates-for-rerank: ${APP_AI_RAG_RERANK_MIN_CANDIDATES:8}  # 候选数不足时跳过精排
+        skip-short-query: ${APP_AI_RAG_RERANK_SKIP_SHORT_QUERY:true}      # 短问题自动跳过精排
+        short-query-threshold: ${APP_AI_RAG_RERANK_SHORT_QUERY_THRESHOLD:6}  # 短问题字符数阈值
 
 
 ```
