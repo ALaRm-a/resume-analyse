@@ -178,7 +178,7 @@ public class KnowledgeBaseQueryService {
         countService.updateQuestionCounts(knowledgeBaseIds);
 
         // 2. Query rewrite + 三级分层检索（RAG）
-        QueryContext queryContext = buildQueryContext(question);
+        QueryContext queryContext = buildQueryContext(question, "");
         List<Document> relevantDocs = retrieveRelevantDocs(queryContext, knowledgeBaseIds, rerankOverride);
 
         if (!hasEffectiveHit(question, relevantDocs)) {
@@ -194,7 +194,7 @@ public class KnowledgeBaseQueryService {
 
         // 4. 构建提示词
         String systemPrompt = buildSystemPrompt();
-        String userPrompt = buildUserPrompt(context, question);
+        String userPrompt = buildUserPrompt(context, question, "");
 
         try {
             // 5. 调用AI生成回答
@@ -224,12 +224,14 @@ public class KnowledgeBaseQueryService {
     /**
      * 构建用户提示词
      */
-    private String buildUserPrompt(String context, String question) {
+    private String buildUserPrompt(String context, String question, String conversationHistory) {
         Map<String, Object> variables = new HashMap<>();
         variables.put("context", context);
         variables.put("question", question);
+        variables.put("conversationHistory", conversationHistory != null ? conversationHistory : "");
         return userPromptTemplate.render(variables);
     }
+
 
     /**
      * 查询知识库并返回完整响应
@@ -255,7 +257,7 @@ public class KnowledgeBaseQueryService {
      * @return 流式响应
      */
     public Flux<String> answerQuestionStream(List<Long> knowledgeBaseIds, String question) {
-        return answerQuestionStream(knowledgeBaseIds, question, null);
+        return answerQuestionStream(knowledgeBaseIds, question, null, "");
     }
 
     /**
@@ -264,6 +266,16 @@ public class KnowledgeBaseQueryService {
      * @param rerankOverride null=默认策略（闸门自动判断），true=强制精排，false=强制跳过精排
      */
     public Flux<String> answerQuestionStream(List<Long> knowledgeBaseIds, String question, Boolean rerankOverride) {
+        return answerQuestionStream(knowledgeBaseIds, question, rerankOverride, "");
+    }
+
+    /**
+     * 流式查询知识库（SSE），支持接口级 rerank 开关和会话历史
+     *
+     * @param rerankOverride null=默认策略（闸门自动判断），true=强制精排，false=强制跳过精排
+     * @param conversationHistory 多轮对话历史，为空字符串时表示无历史
+     */
+    public Flux<String> answerQuestionStream(List<Long> knowledgeBaseIds, String question, Boolean rerankOverride, String conversationHistory) {
         log.info("收到知识库流式提问: kbIds={}, question={}, rerankOverride={}", knowledgeBaseIds, question, rerankOverride);
         if (knowledgeBaseIds == null || knowledgeBaseIds.isEmpty() || normalizeQuestion(question).isBlank()) {
             return Flux.just(NO_RESULT_RESPONSE);
@@ -274,7 +286,7 @@ public class KnowledgeBaseQueryService {
             countService.updateQuestionCounts(knowledgeBaseIds);
 
             // 2. Query rewrite + 三级分层检索
-            QueryContext queryContext = buildQueryContext(question);
+            QueryContext queryContext = buildQueryContext(question, conversationHistory);
             List<Document> relevantDocs = retrieveRelevantDocs(queryContext, knowledgeBaseIds, rerankOverride);
 
             if (!hasEffectiveHit(question, relevantDocs)) {
@@ -290,7 +302,7 @@ public class KnowledgeBaseQueryService {
 
             // 4. 构建提示词
             String systemPrompt = buildSystemPrompt();
-            String userPrompt = buildUserPrompt(context, question);
+            String userPrompt = buildUserPrompt(context, question, conversationHistory);
 
             // 5. 流式调用 + 探测窗口归一化：既保留流式速度，又避免无信息长文
             Flux<String> responseFlux = chatClient.prompt()
@@ -313,9 +325,9 @@ public class KnowledgeBaseQueryService {
         }
     }
 
-    private QueryContext buildQueryContext(String originalQuestion) {
+    private QueryContext buildQueryContext(String originalQuestion, String conversationHistory) {
         String normalizedQuestion = normalizeQuestion(originalQuestion);
-        String rewrittenQuestion = rewriteQuestion(normalizedQuestion);
+        String rewrittenQuestion = rewriteQuestion(normalizedQuestion, conversationHistory);
         Set<String> candidates = new LinkedHashSet<>();
         candidates.add(rewrittenQuestion);
         candidates.add(normalizedQuestion);
@@ -323,6 +335,7 @@ public class KnowledgeBaseQueryService {
         SearchParams searchParams = resolveSearchParams(normalizedQuestion);
         return new QueryContext(normalizedQuestion, new ArrayList<>(candidates), searchParams);
     }
+
 
 //       清洗
     private String normalizeQuestion(String question) {
@@ -499,13 +512,14 @@ public class KnowledgeBaseQueryService {
     }
 
 //    改写
-    private String rewriteQuestion(String question) {
+    private String rewriteQuestion(String question, String conversationHistory) {
         if (!rewriteEnabled || question.isBlank()) {
             return question;
         }
         try {
             Map<String, Object> variables = new HashMap<>();
             variables.put("question", question);
+            variables.put("conversationHistory", conversationHistory != null ? conversationHistory : "");
             String rewritePrompt = rewritePromptTemplate.render(variables);
             String rewritten = chatClient.prompt()
                 .user(rewritePrompt)
@@ -522,6 +536,7 @@ public class KnowledgeBaseQueryService {
             return question;
         }
     }
+
 
     /**
      * 检索命中不等于可回答。

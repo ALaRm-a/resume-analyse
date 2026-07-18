@@ -80,6 +80,19 @@ app:
   ai:
     # 结构化输出重试次数（用于 BeanOutputConverter 解析失败时的业务层重试）
     structured-max-attempts: ${APP_AI_STRUCTURED_MAX_ATTEMPTS:2}
+
+# Agent 记忆模块配置（多轮对话上下文压缩）
+# 默认值：window-size=50, compress-batch=30, trigger-threshold=60
+# 测试压缩效果时可临时调小，例如：
+#   window-size: 20
+#   compress-batch: 10
+#   trigger-threshold: 28
+agent:
+  memory:
+    window-size: 20
+    compress-batch: 10
+    trigger-threshold: 28
+
     # 重试时是否将上次错误原因注入提示词，帮助模型定向修复输出
     structured-include-last-error: ${APP_AI_STRUCTURED_INCLUDE_LAST_ERROR:true}
     rag:

@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * 记忆查询服务 — Agent 记忆模块的对外接口。
@@ -63,8 +64,14 @@ public class MemoryService {
     }
 
     /**
-     * 删除会话的所有记忆（业务模块删除会话时调用）。
+     * 获取指定会话已压缩到的最新消息序号（endMsgOrder）。
+     *
+     * <p>返回 {@link Optional#empty()} 表示该会话尚未压缩过任何消息。</p>
      */
+    public Optional<Integer> getEndMsgOrder(String source, Long sessionId) {
+        return summaryRepository.findBySourceAndSessionId(source, sessionId)
+                .map(ConversationSummaryEntity::getEndMsgOrder);
+    }
     @Transactional
     public void deleteBySourceAndSessionId(String source, Long sessionId) {
         summaryRepository.deleteBySourceAndSessionId(source, sessionId);

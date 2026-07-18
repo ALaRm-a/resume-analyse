@@ -1,5 +1,9 @@
 package interview.guide.modules.knowledgebase.service;
 
+import interview.guide.modules.agent.memory.config.AgentMemoryProperties;
+import interview.guide.modules.agent.memory.dto.CompressibleMessage;
+import interview.guide.modules.agent.memory.service.MemoryCompressService;
+import interview.guide.modules.agent.memory.service.MemoryService;
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.infrastructure.mapper.KnowledgeBaseMapper;
@@ -39,6 +43,11 @@ public class RagChatSessionService {
     private final KnowledgeBaseQueryService queryService;
     private final RagChatMapper ragChatMapper;
     private final KnowledgeBaseMapper knowledgeBaseMapper;
+    private final MemoryService memoryService;
+    private final MemoryCompressService compressService;
+    private final AgentMemoryProperties memoryProperties;
+
+    private static final String MEMORY_SOURCE = "rag_chat";
 
     /**
      * 创建新会话
@@ -140,19 +149,45 @@ public class RagChatSessionService {
     }
 
     /**
-     * 流式响应完成后更新消息
+     * 流式响应完成后更新消息，并触发记忆压缩（如满足条件）。
      */
     @Transactional
     public void completeStreamMessage(Long messageId, String content) {
         RagChatMessageEntity message = messageRepository.findById(messageId)
-            .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "消息不存在"));
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "消息不存在"));
 
         message.setContent(content);
         message.setCompleted(true);
         messageRepository.save(message);
 
+        Long sessionId = message.getSession().getId();
+
+        // 超过阈值时，按范围查询消息并交给压缩服务判断
+        Integer lastOrder = messageRepository.findMaxOrderBySessionId(sessionId);
+        if (lastOrder == null) {
+            log.warn("完成消息后未找到会话消息: sessionId={}", sessionId);
+            return;
+        }
+        int totalMessages = lastOrder + 1;
+
+        if (totalMessages > memoryProperties.getTriggerThreshold()) {
+            int fetchFrom = Math.max(0, lastOrder - 2 * memoryProperties.getWindowSize());
+            List<RagChatMessageEntity> rangeMessages = messageRepository
+                    .findBySessionIdAndMessageOrderBetween(sessionId, fetchFrom, lastOrder);
+
+            List<CompressibleMessage> compressibleMessages = rangeMessages.stream()
+                    .map(m -> new CompressibleMessage(
+                            m.getMessageOrder(),
+                            (m.getType() == RagChatMessageEntity.MessageType.USER ? "用户：" : "助手：")
+                                    + m.getContent()))
+                    .toList();
+
+            compressService.compressIfNeeded(MEMORY_SOURCE, sessionId, totalMessages, compressibleMessages);
+        }
+
         log.info("完成流式消息: messageId={}, contentLength={}", messageId, content.length());
     }
+
 
     /**
      * 获取流式回答（默认 rerank 策略，向后兼容）
@@ -168,11 +203,27 @@ public class RagChatSessionService {
      */
     public Flux<String> getStreamAnswer(Long sessionId, String question, Boolean rerankOverride) {
         RagChatSessionEntity session = sessionRepository.findByIdWithKnowledgeBases(sessionId)
-            .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "会话不存在"));
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "会话不存在"));
 
         List<Long> kbIds = session.getKnowledgeBaseIds();
 
-        return queryService.answerQuestionStream(kbIds, question, rerankOverride);
+        // 从上次压缩结束位置 + 1 开始取消息，跟随压缩进度走
+        int rawReadFrom = memoryService.getEndMsgOrder(MEMORY_SOURCE, sessionId).orElse(-1) + 1;
+        // 边界对齐：readFromOrder 必须是偶数（USER 起步）
+        int readFromOrder = (rawReadFrom % 2 != 0) ? rawReadFrom + 1 : rawReadFrom;
+
+        List<RagChatMessageEntity> recentMessages = messageRepository
+                .findBySessionIdAndMessageOrderGreaterThanEqual(sessionId, readFromOrder);
+
+        List<String> messageTexts = recentMessages.stream()
+                .map(m -> (m.getType() == RagChatMessageEntity.MessageType.USER ? "用户：" : "助手：")
+                        + m.getContent())
+                .toList();
+
+        String conversationHistory = memoryService.getMemory(MEMORY_SOURCE, sessionId, messageTexts)
+                .toPromptText();
+
+        return queryService.answerQuestionStream(kbIds, question, rerankOverride, conversationHistory);
     }
 
     /**
@@ -230,6 +281,8 @@ public class RagChatSessionService {
         if (!sessionRepository.existsById(sessionId)) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "会话不存在");
         }
+        // 先清理摘要记忆，即使会话不存在也要确保残留摘要被删除
+        memoryService.deleteBySourceAndSessionId(MEMORY_SOURCE, sessionId);
         sessionRepository.deleteById(sessionId);
 
         log.info("删除会话: sessionId={}", sessionId);

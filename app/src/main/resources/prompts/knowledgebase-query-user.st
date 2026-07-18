@@ -1,3 +1,6 @@
+## 对话历史
+{conversationHistory}
+
 # Input Data
 请根据以下知识库内容回答用户的问题。
 
@@ -19,4 +22,5 @@
 | 格式规范 | 严格遵守 Markdown 格式规范 |
 
 请开始回答：
+
 
