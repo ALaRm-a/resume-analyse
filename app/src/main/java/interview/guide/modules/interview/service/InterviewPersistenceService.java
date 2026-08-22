@@ -297,6 +297,27 @@ public class InterviewPersistenceService {
     }
 
     /**
+     * 按问题ID（而非列表位置）回填答案到问题列表。
+     * 阶段0（动态追问改造）：questionIndex 语义为唯一ID，插入追问后 ID 不再等于列表下标，
+     * 因此恢复/评估回填必须按 ID 匹配，否则答案错位。
+     */
+    public void mergeAnswersIntoQuestions(List<InterviewQuestionDTO> questions,
+                                          List<InterviewAnswerEntity> answers) {
+        if (questions == null || answers == null || answers.isEmpty()) {
+            return;
+        }
+        for (InterviewAnswerEntity answer : answers) {
+            int questionId = answer.getQuestionIndex();
+            for (int i = 0; i < questions.size(); i++) {
+                if (questions.get(i).questionIndex() == questionId) {
+                    questions.set(i, questions.get(i).withAnswer(answer.getUserAnswer()));
+                    break;
+                }
+            }
+        }
+    }
+
+    /**
      * 获取简历的历史提问列表（限制最近的 N 条）
      */
     public List<String> getHistoricalQuestionsByResumeId(Long resumeId) {

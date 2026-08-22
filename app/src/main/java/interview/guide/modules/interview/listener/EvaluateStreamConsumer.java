@@ -109,15 +109,10 @@ public class EvaluateStreamConsumer extends AbstractStreamConsumer<EvaluateStrea
             new TypeReference<>() {}
         );
 
+        // 按问题 ID 回填答案（而非列表下标；阶段0 起 questionIndex 是唯一 ID，插入追问后 ID ≠ 下标）
         List<interview.guide.modules.interview.model.InterviewAnswerEntity> answers =
             persistenceService.findAnswersBySessionId(sessionId);
-        for (interview.guide.modules.interview.model.InterviewAnswerEntity answer : answers) {
-            int index = answer.getQuestionIndex();
-            if (index >= 0 && index < questions.size()) {
-                InterviewQuestionDTO question = questions.get(index);
-                questions.set(index, question.withAnswer(answer.getUserAnswer()));
-            }
-        }
+        persistenceService.mergeAnswersIntoQuestions(questions, answers);
 
         String resumeText = session.getResume().getResumeText();
         InterviewReportDTO report = evaluationService.evaluateInterview(sessionId, resumeText, questions);

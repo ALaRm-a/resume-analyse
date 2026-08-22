@@ -146,12 +146,14 @@ public class AnswerEvaluationService {
     
     /**
      * 构建问答记录字符串
+     * 展示编号用遍历序号（阶段0 起 questionIndex 是唯一 ID，不再等于展示序号）
      */
     private String buildQARecords(List<InterviewQuestionDTO> questions) {
         StringBuilder sb = new StringBuilder();
-        for (InterviewQuestionDTO q : questions) {
+        for (int i = 0; i < questions.size(); i++) {
+            InterviewQuestionDTO q = questions.get(i);
             sb.append(String.format("问题%d [%s]: %s\n", 
-                q.questionIndex() + 1, q.category(), q.question()));
+                i + 1, q.category(), q.question()));
             sb.append(String.format("回答: %s\n\n", 
                 q.userAnswer() != null ? q.userAnswer() : "(未回答)"));
         }
@@ -368,7 +370,7 @@ public class AnswerEvaluationService {
             String shortQuestion = questionText.length() > 50 ? questionText.substring(0, 50) + "..." : questionText;
             String shortFeedback = feedback.length() > 80 ? feedback.substring(0, 80) + "..." : feedback;
             highlights.add(String.format("- Q%d | %s | 分数:%d | 反馈:%s",
-                q.questionIndex() + 1, shortQuestion, score, shortFeedback));
+                i + 1, shortQuestion, score, shortFeedback));
         }
         return highlights.stream().limit(20).collect(Collectors.joining("\n"));
     }

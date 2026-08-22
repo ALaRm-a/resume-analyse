@@ -187,15 +187,9 @@ public class InterviewSessionService {
                 new TypeReference<>() {}
             );
 
-            // 恢复已保存的答案
+            // 恢复已保存的答案（按问题 ID 回填，而非列表下标；插入追问后 ID ≠ 下标）
             List<InterviewAnswerEntity> answers = persistenceService.findAnswersBySessionId(entity.getSessionId());
-            for (InterviewAnswerEntity answer : answers) {
-                int index = answer.getQuestionIndex();
-                if (index >= 0 && index < questions.size()) {
-                    InterviewQuestionDTO question = questions.get(index);
-                    questions.set(index, question.withAnswer(answer.getUserAnswer()));
-                }
-            }
+            persistenceService.mergeAnswersIntoQuestions(questions, answers);
 
             SessionStatus status = convertStatus(entity.getStatus());
 
@@ -277,23 +271,28 @@ public class InterviewSessionService {
     /**
      * 提交答案（并进入下一题）
      * 如果是最后一题，自动触发异步评估
+     *
+     * 阶段0（动态追问改造）：request.questionIndex() 是唯一 ID 而非列表下标，
+     * 必须先通过 ID 定位列表位置 pos，再执行依赖位置的操作（更新答案、游标推进）。
+     * 答案落库锚定 ID，游标推进用位置。
      */
     public SubmitAnswerResponse submitAnswer(SubmitAnswerRequest request) {
         CachedSession session = getOrRestoreSession(request.sessionId());
         List<InterviewQuestionDTO> questions = session.getQuestions(objectMapper);
 
-        int index = request.questionIndex();
-        if (index < 0 || index >= questions.size()) {
-            throw new BusinessException(ErrorCode.INTERVIEW_QUESTION_NOT_FOUND, "无效的问题索引: " + index);
+        int questionId = request.questionIndex();
+        int pos = indexOfQuestionById(questions, questionId);
+        if (pos < 0) {
+            throw new BusinessException(ErrorCode.INTERVIEW_QUESTION_NOT_FOUND, "无效的问题ID: " + questionId);
         }
 
-        // 更新问题答案
-        InterviewQuestionDTO question = questions.get(index);
+        // 更新问题答案（按位置写回）
+        InterviewQuestionDTO question = questions.get(pos);
         InterviewQuestionDTO answeredQuestion = question.withAnswer(request.answer());
-        questions.set(index, answeredQuestion);
+        questions.set(pos, answeredQuestion);
 
-        // 移动到下一题
-        int newIndex = index + 1;
+        // 移动到下一题（游标 = 位置 + 1）
+        int newIndex = pos + 1;
 
         // 检查是否全部完成
         boolean hasNextQuestion = newIndex < questions.size();
@@ -308,10 +307,10 @@ public class InterviewSessionService {
             sessionCache.updateSessionStatus(request.sessionId(), SessionStatus.COMPLETED);
         }
 
-        // 保存答案到数据库
+        // 保存答案到数据库（落库锚定问题 ID，而非位置）
         try {
             persistenceService.saveAnswer(
-                request.sessionId(), index,
+                request.sessionId(), questionId,
                 question.question(), question.category(),
                 request.answer(), 0, null  // 分数在报告生成时更新
             );
@@ -331,33 +330,36 @@ public class InterviewSessionService {
             log.warn("保存答案到数据库失败: {}", e.getMessage());
         }
 
-        log.info("会话 {} 提交答案: 问题{}, 剩余{}题",
-            request.sessionId(), index, questions.size() - newIndex);
+        log.info("会话 {} 提交答案: 问题ID{}, 剩余{}题",
+            request.sessionId(), questionId, questions.size() - newIndex);
 
         return new SubmitAnswerResponse(
             hasNextQuestion,
             nextQuestion,
             newIndex,
-            questions.size()
+            questions.size(),
+            newIndex
         );
     }
 
     /**
      * 暂存答案（不进入下一题）
+     * 阶段0（动态追问改造）：与 submitAnswer 一致，按 ID 定位列表位置，落库锚定 ID。
      */
     public void saveAnswer(SubmitAnswerRequest request) {
         CachedSession session = getOrRestoreSession(request.sessionId());
         List<InterviewQuestionDTO> questions = session.getQuestions(objectMapper);
 
-        int index = request.questionIndex();
-        if (index < 0 || index >= questions.size()) {
-            throw new BusinessException(ErrorCode.INTERVIEW_QUESTION_NOT_FOUND, "无效的问题索引: " + index);
+        int questionId = request.questionIndex();
+        int pos = indexOfQuestionById(questions, questionId);
+        if (pos < 0) {
+            throw new BusinessException(ErrorCode.INTERVIEW_QUESTION_NOT_FOUND, "无效的问题ID: " + questionId);
         }
 
         // 更新问题答案
-        InterviewQuestionDTO question = questions.get(index);
+        InterviewQuestionDTO question = questions.get(pos);
         InterviewQuestionDTO answeredQuestion = question.withAnswer(request.answer());
-        questions.set(index, answeredQuestion);
+        questions.set(pos, answeredQuestion);
 
         // 更新 Redis 缓存
         sessionCache.updateQuestions(request.sessionId(), questions);
@@ -367,10 +369,10 @@ public class InterviewSessionService {
             sessionCache.updateSessionStatus(request.sessionId(), SessionStatus.IN_PROGRESS);
         }
 
-        // 保存答案到数据库（不更新currentIndex）
+        // 保存答案到数据库（不更新currentIndex，落库锚定问题 ID）
         try {
             persistenceService.saveAnswer(
-                request.sessionId(), index,
+                request.sessionId(), questionId,
                 question.question(), question.category(),
                 request.answer(), 0, null
             );
@@ -380,7 +382,7 @@ public class InterviewSessionService {
             log.warn("暂存答案到数据库失败: {}", e.getMessage());
         }
 
-        log.info("会话 {} 暂存答案: 问题{}", request.sessionId(), index);
+        log.info("会话 {} 暂存答案: 问题ID{}", request.sessionId(), questionId);
     }
 
     /**
@@ -410,6 +412,22 @@ public class InterviewSessionService {
         evaluateStreamProducer.sendEvaluateTask(sessionId);
 
         log.info("会话 {} 提前交卷，评估任务已入队", sessionId);
+    }
+
+    /**
+     * 通过问题 ID 定位其在列表中的实际位置（pos）。
+     * 阶段0（动态追问改造）：questionIndex 是唯一 ID 而非下标，插入追问后 ID ≠ 位置，
+     * 所有"按问题操作"的入口必须先经此方法换算位置。题量 ≤ 30，线性扫描即可。
+     *
+     * @return 列表位置（0 起），未找到返回 -1
+     */
+    private int indexOfQuestionById(List<InterviewQuestionDTO> questions, int questionId) {
+        for (int i = 0; i < questions.size(); i++) {
+            if (questions.get(i).questionIndex() == questionId) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     /**
