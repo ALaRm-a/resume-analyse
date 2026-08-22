@@ -36,6 +36,7 @@ export default function Interview({ resumeText, resumeId, onBack, onInterviewCom
   const [unfinishedSession, setUnfinishedSession] = useState<InterviewSession | null>(null);
   const [showCompleteConfirm, setShowCompleteConfirm] = useState(false);
   const [forceCreateNew, setForceCreateNew] = useState(false);
+  const [answeredCount, setAnsweredCount] = useState(0);  // 已作答题数（进度条用，不依赖 questionIndex 数值）
 
   // 检查是否有未完成的面试（组件挂载时和resumeId变化时）
   useEffect(() => {
@@ -75,6 +76,7 @@ export default function Interview({ resumeText, resumeId, onBack, onInterviewCom
 
     const restoreSession = (sessionToRestore: InterviewSession) => {
     setSession(sessionToRestore);
+    setAnsweredCount(sessionToRestore.currentQuestionIndex);  // 游标 = 已答数
 
         // 恢复当前问题
     const currentQ = sessionToRestore.questions[sessionToRestore.currentQuestionIndex];
@@ -136,6 +138,7 @@ export default function Interview({ resumeText, resumeId, onBack, onInterviewCom
       } else {
         // 全新的会话
         setSession(newSession);
+        setAnsweredCount(0);
 
                 if (newSession.questions.length > 0) {
           const firstQuestion = newSession.questions[0];
@@ -178,6 +181,7 @@ export default function Interview({ resumeText, resumeId, onBack, onInterviewCom
       });
 
       setAnswer('');
+      setAnsweredCount(response.answeredCount);
 
       if (response.hasNextQuestion && response.nextQuestion) {
         setCurrentQuestion(response.nextQuestion);
@@ -245,6 +249,7 @@ export default function Interview({ resumeText, resumeId, onBack, onInterviewCom
         currentQuestion={currentQuestion}
         messages={messages}
         answer={answer}
+        answeredCount={answeredCount}
         onAnswerChange={setAnswer}
         onSubmit={handleSubmitAnswer}
         onCompleteEarly={handleCompleteEarly}

@@ -59,11 +59,11 @@ export default function Layout() {
           className="flex min-h-screen bg-gradient-to-br from-slate-50 to-indigo-50 dark:from-slate-900 dark:to-slate-800">
       {/* 左侧边栏 */}
           <aside
-              className="w-64 bg-white dark:bg-slate-900 border-r border-slate-100 dark:border-slate-700 fixed h-screen left-0 top-0 z-50 flex flex-col">
+              className="w-64 bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl border-r border-slate-200/60 dark:border-slate-700/50 fixed h-screen left-0 top-0 z-50 flex flex-col shadow-[4px_0_24px_rgba(99,102,241,0.04)] dark:shadow-[4px_0_24px_rgba(0,0,0,0.3)]">
         {/* Logo */}
-              <div className="p-6 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
+              <div className="p-6 border-b border-slate-200/60 dark:border-slate-700/50 flex items-center justify-between">
           <Link to="/upload" className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-gradient-to-br from-primary-500 to-primary-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-primary-500/30">
+            <div className="w-10 h-10 bg-gradient-to-br from-primary-500 to-purple-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-primary-500/30">
               <Sparkles className="w-5 h-5" />
             </div>
             <div>
@@ -78,7 +78,12 @@ export default function Layout() {
               <div className="px-4 pb-2">
                   <button
                       onClick={toggleTheme}
-                      className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
+                      className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl
+                                 bg-slate-100/70 dark:bg-slate-800/70 backdrop-blur-sm
+                                 text-slate-600 dark:text-slate-300
+                                 hover:bg-slate-200/80 dark:hover:bg-slate-700/80
+                                 border border-slate-200/50 dark:border-slate-700/50
+                                 transition-all duration-300"
                   >
                       {theme === 'dark' ? (
                           <>
@@ -150,9 +155,11 @@ export default function Layout() {
         </nav>
 
         {/* 底部信息 */}
-              <div className="p-4 border-t border-slate-100 dark:border-slate-700">
+              <div className="p-4 border-t border-slate-200/60 dark:border-slate-700/50">
                   <div
-                      className="px-3 py-2 bg-gradient-to-r from-primary-50 to-indigo-50 dark:from-primary-900/30 dark:to-slate-800 rounded-xl">
+                      className="px-4 py-3 rounded-xl bg-gradient-to-br from-primary-50/80 to-indigo-50/80
+                                 dark:from-primary-900/20 dark:to-slate-800/50
+                                 backdrop-blur-sm border border-primary-100/50 dark:border-primary-800/20">
                       <p className="text-xs text-primary-600 dark:text-primary-400 font-medium">AI 面试助手 v1.0</p>
                       <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">Powered by AI</p>
           </div>

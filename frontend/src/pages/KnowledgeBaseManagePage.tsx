@@ -97,15 +97,17 @@ function StatCard({
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-sm border border-slate-100 dark:border-slate-700"
+      whileHover={{ y: -2 }}
+      className="stat-card group cursor-default"
     >
       <div className="flex items-center gap-4">
-        <div className={`p-3 rounded-lg ${color}`}>
+        <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${color} flex items-center justify-center
+                        shadow-lg group-hover:shadow-xl transition-shadow duration-300`}>
           <Icon className="w-6 h-6 text-white" />
         </div>
         <div>
-            <p className="text-sm text-slate-500 dark:text-slate-400">{label}</p>
-            <p className="text-2xl font-bold text-slate-800 dark:text-white">{value.toLocaleString()}</p>
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">{label}</p>
+            <p className="text-3xl font-bold text-slate-900 dark:text-white tracking-tight mt-0.5">{value.toLocaleString()}</p>
         </div>
       </div>
     </motion.div>
@@ -340,7 +342,7 @@ export default function KnowledgeBaseManagePage({ onUpload, onChat }: KnowledgeB
 
       {/* 搜索和筛选栏 */}
         <div
-            className="bg-white dark:bg-slate-800 rounded-xl p-4 shadow-sm border border-slate-100 dark:border-slate-700 mb-6">
+            className="glass-card mb-6 p-4">
         <div className="flex flex-wrap items-center gap-4">
           {/* 搜索框 */}
           <form onSubmit={handleSearch} className="flex-1 min-w-[200px]">
@@ -399,7 +401,7 @@ export default function KnowledgeBaseManagePage({ onUpload, onChat }: KnowledgeB
 
       {/* 知识库列表 */}
         <div
-            className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-100 dark:border-slate-700 overflow-hidden">
+            className="glass-card overflow-hidden">
         {loading ? (
           <div className="flex items-center justify-center py-20">
             <Loader2 className="w-8 h-8 text-primary-500 animate-spin" />

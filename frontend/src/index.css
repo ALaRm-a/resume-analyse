@@ -18,7 +18,7 @@
   --color-primary-800: #3730a3;
   --color-primary-900: #312e81;
 
-    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
     'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica,
     Arial, sans-serif;
 }
@@ -30,9 +30,14 @@
   }
 
   body {
-      @apply antialiased;
-      @apply bg-gradient-to-br from-slate-50 to-indigo-50 text-slate-900;
-      @apply dark:bg-gradient-to-br dark:from-slate-900 dark:to-slate-800 dark:text-slate-100;
+    @apply antialiased;
+    background: linear-gradient(135deg, #f8fafc 0%, #eef2ff 50%, #f5f3ff 100%);
+    @apply text-slate-900;
+    @apply dark:text-slate-100;
+  }
+
+  .dark body {
+    background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
   }
 
   #root {
@@ -40,26 +45,129 @@
   }
 }
 
-/* 深色模式通用样式 - 自动应用于所有卡片和容器 */
+/* 通用组件样式 */
 @layer components {
-    /* 通用卡片背景 */
-    .dark-card {
-        @apply bg-white dark:bg-slate-800 rounded-2xl;
-    }
+  /* 玻璃态卡片 */
+  .glass-card {
+    @apply bg-white/80 dark:bg-slate-800/70 backdrop-blur-xl border border-white/20 dark:border-slate-700/30 rounded-2xl;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04),
+                0 4px 12px rgba(99, 102, 241, 0.06),
+                0 8px 24px rgba(99, 102, 241, 0.04);
+  }
 
-    /* 通用输入框 */
-    .dark-input {
-        @apply bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-900 dark:text-white;
-    }
+  .dark .glass-card {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2),
+                0 4px 12px rgba(99, 102, 241, 0.08),
+                0 8px 24px rgba(0, 0, 0, 0.3);
+  }
 
-    /* 通用文字颜色 */
-    .dark-text {
-        @apply text-slate-900 dark:text-white;
+  /* 玻璃态卡片 hover */
+  .glass-card-hover {
+    @apply bg-white/80 dark:bg-slate-800/70 backdrop-blur-xl border border-white/20 dark:border-slate-700/30 rounded-2xl transition-all duration-300;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04),
+                0 4px 12px rgba(99, 102, 241, 0.06),
+                0 8px 24px rgba(99, 102, 241, 0.04);
+    &:hover {
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06),
+                  0 8px 20px rgba(99, 102, 241, 0.1),
+                  0 16px 40px rgba(99, 102, 241, 0.06);
+      transform: translateY(-2px);
     }
+  }
 
-    .dark-text-muted {
-        @apply text-slate-500 dark:text-slate-400;
-    }
+  .dark .glass-card-hover {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2),
+                0 4px 12px rgba(99, 102, 241, 0.08),
+                0 8px 24px rgba(0, 0, 0, 0.3);
+  }
+
+  .dark .glass-card-hover:hover {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3),
+                0 8px 20px rgba(99, 102, 241, 0.15),
+                0 16px 40px rgba(0, 0, 0, 0.4);
+  }
+
+  /* 统计卡片 */
+  .stat-card {
+    @apply bg-white/80 dark:bg-slate-800/70 backdrop-blur-xl border border-white/20 dark:border-slate-700/30 rounded-2xl p-6;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04),
+                0 4px 12px rgba(99, 102, 241, 0.06),
+                0 8px 24px rgba(99, 102, 241, 0.04);
+  }
+
+  .dark .stat-card {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2),
+                0 4px 12px rgba(99, 102, 241, 0.08),
+                0 8px 24px rgba(0, 0, 0, 0.3);
+  }
+
+  /* 暗色卡片 */
+  .dark-card {
+    @apply bg-white dark:bg-slate-800 rounded-2xl;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.04);
+  }
+
+  .dark .dark-card {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.2);
+  }
+
+  /* 通用输入框 */
+  .dark-input {
+    @apply bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-900 dark:text-white rounded-xl
+           focus:ring-2 focus:ring-primary-500/30 focus:border-primary-400 dark:focus:border-primary-500
+           transition-all duration-200 outline-none;
+  }
+
+  /* 通用文字颜色 */
+  .dark-text {
+    @apply text-slate-900 dark:text-white;
+  }
+
+  .dark-text-muted {
+    @apply text-slate-500 dark:text-slate-400;
+  }
+
+  /* 渐变主按钮 */
+  .btn-primary {
+    @apply bg-gradient-to-r from-primary-500 to-primary-600 text-white rounded-xl font-semibold
+           shadow-lg shadow-primary-500/25 hover:shadow-xl hover:shadow-primary-500/35
+           transition-all duration-300 hover:-translate-y-0.5 active:translate-y-0;
+  }
+
+  /* 渐变成功按钮 */
+  .btn-success {
+    @apply bg-gradient-to-r from-emerald-500 to-emerald-600 text-white rounded-xl font-semibold
+           shadow-lg shadow-emerald-500/25 hover:shadow-xl hover:shadow-emerald-500/35
+           transition-all duration-300 hover:-translate-y-0.5 active:translate-y-0;
+  }
+
+  /* 幽灵按钮 */
+  .btn-ghost {
+    @apply border border-slate-200 dark:border-slate-600 rounded-xl text-slate-600 dark:text-slate-300
+           font-medium hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-all duration-200
+           hover:border-slate-300 dark:hover:border-slate-500;
+  }
+
+  /* 图标容器 - 彩色渐变 */
+  .icon-box-soft {
+    @apply p-2.5 rounded-xl bg-gradient-to-br;
+  }
+
+  /* 页面标题 */
+  .page-title {
+    @apply text-2xl font-bold text-slate-900 dark:text-white tracking-tight;
+    background: linear-gradient(135deg, #4f46e5, #7c3aed);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .dark .page-title {
+    background: linear-gradient(135deg, #818cf8, #a78bfa);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
 }
 
 /* 自定义滚动条 */
@@ -68,13 +176,39 @@
     @apply w-2 h-2;
   }
 
-    .scrollbar-thin::-webkit-scrollbar-track {
+  .scrollbar-thin::-webkit-scrollbar-track {
     @apply bg-slate-100 rounded;
-        @apply dark:bg-slate-800;
+    @apply dark:bg-slate-800;
   }
 
-    .scrollbar-thin::-webkit-scrollbar-thumb {
+  .scrollbar-thin::-webkit-scrollbar-thumb {
     @apply bg-slate-300 rounded hover:bg-slate-400;
-        @apply dark:bg-slate-600 dark:hover:bg-slate-500;
+    @apply dark:bg-slate-600 dark:hover:bg-slate-500;
+  }
+
+  /* 骨架屏动画 */
+  .skeleton {
+    @apply bg-gradient-to-r from-slate-200 via-slate-100 to-slate-200
+           dark:from-slate-700 dark:via-slate-600 dark:to-slate-700
+           bg-[length:200%_100%] animate-pulse rounded;
+  }
+
+  /* 光泽扫过动画 */
+  .shimmer {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .shimmer::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.4) 50%, transparent 100%);
+    transform: translateX(-100%);
+    animation: shimmer 2s infinite;
+  }
+
+  @keyframes shimmer {
+    100% { transform: translateX(100%); }
   }
 }

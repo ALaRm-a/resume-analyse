@@ -55,7 +55,7 @@ export default function ConfirmDialog({
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
               onClick={(e) => e.stopPropagation()}
-              className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl max-w-md w-full p-6"
+              className="bg-white/90 dark:bg-slate-800/90 backdrop-blur-xl rounded-2xl shadow-2xl max-w-md w-full p-6 border border-slate-200/50 dark:border-slate-700/50"
             >
               {/* 标题 */}
                 <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-4">

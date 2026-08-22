@@ -40,7 +40,7 @@ export default function InterviewConfigPanel({
       animate={{ opacity: 1, y: 0 }}
     >
           <div
-              className="bg-white dark:bg-slate-800 rounded-2xl p-8 shadow-sm dark:shadow-slate-900/50 border border-slate-100 dark:border-slate-700">
+              className="glass-card p-8">
               <h2 className="text-2xl font-bold text-slate-900 dark:text-white mb-6 flex items-center gap-3">
                   <div
                       className="w-10 h-10 bg-primary-100 dark:bg-primary-900/50 rounded-xl flex items-center justify-center">
@@ -148,7 +148,7 @@ export default function InterviewConfigPanel({
               <textarea
               value={resumeText.substring(0, 500) + (resumeText.length > 500 ? '...' : '')}
               readOnly
-              className="w-full h-32 p-4 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-600 rounded-xl text-slate-600 dark:text-slate-400 text-sm resize-none"
+              className="w-full h-32 p-4 dark-input text-sm resize-none"
             />
           </div>
 
@@ -172,7 +172,7 @@ export default function InterviewConfigPanel({
             <div className="flex justify-center gap-4">
                 <motion.button
               onClick={onBack}
-              className="px-6 py-3 border border-slate-200 dark:border-slate-600 rounded-xl text-slate-600 dark:text-slate-300 font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition-all"
+              className="btn-ghost px-6 py-3"
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
             >
@@ -181,7 +181,7 @@ export default function InterviewConfigPanel({
             <motion.button
               onClick={onStart}
               disabled={isCreating}
-              className="px-8 py-3 bg-gradient-to-r from-primary-500 to-primary-600 text-white rounded-xl font-semibold shadow-lg shadow-primary-500/30 hover:shadow-xl transition-all disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2"
+              className="btn-primary px-8 py-3 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0 flex items-center gap-2"
               whileHover={{ scale: isCreating ? 1 : 1.02, y: isCreating ? 0 : -1 }}
               whileTap={{ scale: isCreating ? 1 : 0.98 }}
             >

@@ -124,8 +124,13 @@ export default function FileUploadCard({
 
       {/* 上传区域 */}
       <motion.div
-          className={`relative bg-white dark:bg-slate-800 rounded-2xl p-12 cursor-pointer transition-all duration-300
-          ${dragOver ? 'scale-[1.02] shadow-xl' : 'shadow-lg hover:shadow-xl dark:shadow-slate-900/50'}`}
+          className={`relative rounded-2xl p-12 cursor-pointer transition-all duration-300
+          ${dragOver ? 'scale-[1.02]' : ''}
+          bg-white/70 dark:bg-slate-800/60 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/30
+          shadow-[0_1px_3px_rgba(0,0,0,0.04),0_8px_24px_rgba(99,102,241,0.06)]
+          dark:shadow-[0_1px_3px_rgba(0,0,0,0.3),0_8px_24px_rgba(0,0,0,0.3)]
+          hover:shadow-[0_1px_3px_rgba(0,0,0,0.06),0_16px_40px_rgba(99,102,241,0.1)]
+          dark:hover:shadow-[0_1px_3px_rgba(0,0,0,0.4),0_16px_40px_rgba(99,102,241,0.12)]`}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
@@ -136,10 +141,13 @@ export default function FileUploadCard({
       >
         {/* 渐变边框效果 */}
         <div
-          className={`absolute inset-0 rounded-2xl p-[2px] bg-gradient-to-r from-indigo-200 via-purple-200 to-indigo-200 -z-10
-            ${dragOver ? 'from-indigo-400 via-purple-400 to-indigo-400' : ''}`}
+          className={`absolute inset-0 rounded-2xl p-[1px] -z-10
+            bg-gradient-to-r from-primary-200 via-purple-200 to-primary-200
+            dark:from-primary-800 dark:via-purple-800 dark:to-primary-800
+            opacity-50 transition-opacity duration-300
+            ${dragOver ? 'opacity-100 from-primary-400 via-purple-400 to-primary-400' : ''}`}
         >
-          <div className="w-full h-full bg-white dark:bg-slate-800 rounded-2xl"/>
+          <div className="w-full h-full bg-white dark:bg-slate-800 rounded-2xl" />
         </div>
 
         <input
@@ -162,7 +170,7 @@ export default function FileUploadCard({
                 className="space-y-4"
               >
                 <div
-                    className="w-20 h-20 mx-auto bg-primary-100 dark:bg-primary-900/50 rounded-full flex items-center justify-center">
+                    className="w-20 h-20 mx-auto bg-gradient-to-br from-primary-100 to-purple-100 dark:from-primary-900/40 dark:to-purple-900/40 rounded-2xl flex items-center justify-center shadow-lg">
                   <FileText className="w-10 h-10 text-primary-600 dark:text-primary-400"/>
                 </div>
                 <div
@@ -191,8 +199,9 @@ export default function FileUploadCard({
                 className="space-y-4"
               >
                 <motion.div
-                  className={`w-20 h-20 mx-auto rounded-2xl flex items-center justify-center transition-colors
-                    ${dragOver ? 'bg-primary-100 dark:bg-primary-900/50 text-primary-600 dark:text-primary-400' : 'bg-slate-100 dark:bg-slate-700 text-slate-400 dark:text-slate-500'}`}
+                  className={`w-20 h-20 mx-auto rounded-2xl flex items-center justify-center transition-all duration-300
+                    ${dragOver ? 'bg-gradient-to-br from-primary-100 to-purple-100 dark:from-primary-900/50 dark:to-purple-900/50 text-primary-600 dark:text-primary-400 shadow-lg scale-110'
+                              : 'bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-700 dark:to-slate-600 text-slate-400 dark:text-slate-400'}`}
                   animate={{ y: dragOver ? -5 : 0 }}
                 >
                   <Upload className="w-10 h-10" />
@@ -204,7 +213,7 @@ export default function FileUploadCard({
                   </p>
                 </div>
                 <motion.button
-                  className="bg-gradient-to-r from-primary-500 to-primary-600 text-white px-8 py-3.5 rounded-xl font-semibold shadow-lg shadow-primary-500/30 hover:shadow-xl hover:shadow-primary-500/40 transition-all"
+                  className="btn-primary px-8 py-3.5"
                   whileHover={{ scale: 1.02, y: -2 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={(e) => {
@@ -223,7 +232,7 @@ export default function FileUploadCard({
       {/* 名称输入框 */}
       {showNameInput && selectedFile && (
         <motion.div
-            className="mt-6 bg-white dark:bg-slate-800 rounded-2xl p-6 shadow-lg dark:shadow-slate-900/50"
+            className="mt-6 glass-card p-6"
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
         >
@@ -233,7 +242,7 @@ export default function FileUploadCard({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder={namePlaceholder}
-            className="w-full px-4 py-3 border border-slate-200 dark:border-slate-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white dark:bg-slate-700 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500"
+            className="w-full px-4 py-3 dark-input"
             disabled={uploading}
             onClick={(e) => e.stopPropagation()}
           />
@@ -260,7 +269,7 @@ export default function FileUploadCard({
         {onBack && (
           <motion.button
             onClick={onBack}
-            className="px-6 py-3 border border-slate-200 dark:border-slate-600 rounded-xl text-slate-600 dark:text-slate-300 font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition-all"
+            className="px-6 py-3 btn-ghost"
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
           >
@@ -271,7 +280,7 @@ export default function FileUploadCard({
           <motion.button
             onClick={handleUpload}
             disabled={uploading}
-            className="px-8 py-3 bg-gradient-to-r from-emerald-500 to-emerald-600 text-white rounded-xl font-semibold shadow-lg shadow-emerald-500/30 hover:shadow-xl transition-all disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2"
+            className="btn-success px-8 py-3 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0 flex items-center gap-2"
             whileHover={{ scale: uploading ? 1 : 1.02 }}
             whileTap={{ scale: uploading ? 1 : 0.98 }}
           >

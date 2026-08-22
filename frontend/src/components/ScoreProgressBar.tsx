@@ -24,18 +24,18 @@ export default function ScoreProgressBar({
   const percentage = calculatePercentage(score, maxScore);
 
   return (
-      <div className={`bg-slate-50 dark:bg-slate-700/50 rounded-lg p-3 ${className}`}>
-          <div className="text-xs text-slate-500 dark:text-slate-400 mb-1">{label}</div>
+      <div className={`bg-slate-50/80 dark:bg-slate-700/50 backdrop-blur-sm rounded-xl p-3 border border-slate-200/50 dark:border-slate-700/30 ${className}`}>
+          <div className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5">{label}</div>
       <div className="flex items-center gap-2">
-          <div className="flex-1 h-2 bg-slate-200 dark:bg-slate-600 rounded-full overflow-hidden">
+          <div className="flex-1 h-2.5 bg-slate-200 dark:bg-slate-600 rounded-full overflow-hidden">
           <motion.div
-            className={`h-full ${color} rounded-full`}
+            className={`h-full ${color} rounded-full shadow-sm`}
             initial={{ width: 0 }}
             animate={{ width: `${percentage}%` }}
             transition={{ duration: 0.8, delay }}
           />
         </div>
-          <span className="text-sm font-semibold text-slate-700 dark:text-slate-300 w-8 text-right">
+          <span className="text-sm font-semibold text-slate-700 dark:text-slate-300 w-10 text-right">
           {score}/{maxScore}
         </span>
       </div>

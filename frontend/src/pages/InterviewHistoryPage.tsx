@@ -55,15 +55,17 @@ function StatCard({
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-sm border border-slate-100 dark:border-slate-700"
+      whileHover={{ y: -2 }}
+      className="stat-card group cursor-default"
     >
       <div className="flex items-center gap-4">
-        <div className={`p-3 rounded-lg ${color}`}>
+        <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${color} flex items-center justify-center
+                        shadow-lg group-hover:shadow-xl transition-shadow duration-300`}>
           <Icon className="w-6 h-6 text-white" />
         </div>
         <div>
-            <p className="text-sm text-slate-500 dark:text-slate-400">{label}</p>
-            <p className="text-2xl font-bold text-slate-800 dark:text-white">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">{label}</p>
+            <p className="text-3xl font-bold text-slate-900 dark:text-white tracking-tight mt-0.5">
                 {value}{suffix &&
                 <span className="text-base font-normal text-slate-400 dark:text-slate-500 ml-1">{suffix}</span>}
           </p>
@@ -363,7 +365,7 @@ export default function InterviewHistoryPage({ onBack: _onBack, onViewInterview 
       {/* 空状态 */}
       {!loading && filteredInterviews.length === 0 && (
         <motion.div
-            className="text-center py-20 bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-700"
+            className="text-center py-20 glass-card"
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
         >
@@ -376,7 +378,7 @@ export default function InterviewHistoryPage({ onBack: _onBack, onViewInterview 
       {/* 表格 */}
       {!loading && filteredInterviews.length > 0 && (
         <motion.div
-            className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-100 dark:border-slate-700 overflow-hidden"
+            className="glass-card overflow-hidden"
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.2 }}

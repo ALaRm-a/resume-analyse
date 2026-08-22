@@ -16,6 +16,7 @@ interface InterviewChatPanelProps {
   currentQuestion: InterviewQuestion | null;
   messages: Message[];
   answer: string;
+  answeredCount: number;  // 已作答题数（阶段0 起 questionIndex 是唯一 ID 而非序号，进度条依赖该字段）
   onAnswerChange: (answer: string) => void;
   onSubmit: () => void;
   onCompleteEarly: () => void;
@@ -32,6 +33,7 @@ export default function InterviewChatPanel({
   currentQuestion,
   messages,
   answer,
+  answeredCount,
   onAnswerChange,
   onSubmit,
   // onCompleteEarly, // 暂时未使用
@@ -41,10 +43,14 @@ export default function InterviewChatPanel({
 }: InterviewChatPanelProps) {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
 
+  // 进度 = 已答数 / 总题数（不依赖 questionIndex 数值）
   const progress = useMemo(() => {
-    if (!session || !currentQuestion) return 0;
-    return ((currentQuestion.questionIndex + 1) / session.totalQuestions) * 100;
-  }, [session, currentQuestion]);
+    if (!session || session.totalQuestions === 0) return 0;
+    return Math.min((answeredCount / session.totalQuestions) * 100, 100);
+  }, [session, answeredCount]);
+
+  // 当前题号（封顶总题数，全部答完后不超界）
+  const currentNumber = Math.min(answeredCount + 1, session.totalQuestions);
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
@@ -56,10 +62,10 @@ export default function InterviewChatPanel({
     <div className="flex flex-col h-[calc(100vh-200px)] max-w-4xl mx-auto">
       {/* 进度条 */}
         <div
-            className="bg-white dark:bg-slate-800 rounded-2xl p-6 mb-4 shadow-sm dark:shadow-slate-900/50 border border-slate-100 dark:border-slate-700">
+            className="glass-card p-6 mb-4">
         <div className="flex items-center justify-between mb-3">
           <span className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-            题目 {currentQuestion ? currentQuestion.questionIndex + 1 : 0} / {session.totalQuestions}
+            题目 {currentQuestion ? currentNumber : 0} / {session.totalQuestions}
           </span>
             <span className="text-sm text-slate-500 dark:text-slate-400">
             {Math.round(progress)}%
@@ -77,7 +83,7 @@ export default function InterviewChatPanel({
 
       {/* 聊天区域 */}
         <div
-            className="flex-1 bg-white dark:bg-slate-800 rounded-2xl shadow-sm dark:shadow-slate-900/50 overflow-hidden flex flex-col min-h-0 border border-slate-100 dark:border-slate-700">
+            className="flex-1 glass-card overflow-hidden flex flex-col min-h-0">
         <Virtuoso
           ref={virtuosoRef}
           data={messages}

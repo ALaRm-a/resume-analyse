@@ -120,7 +120,7 @@ export default function HistoryList({ onSelectResume }: HistoryListProps) {
       {/* 空状态 */}
       {!loading && filteredResumes.length === 0 && (
           <motion.div
-              className="text-center py-20 bg-white dark:bg-slate-800 rounded-2xl"
+              className="text-center py-20 glass-card"
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
         >
@@ -133,7 +133,7 @@ export default function HistoryList({ onSelectResume }: HistoryListProps) {
       {/* 表格 */}
       {!loading && filteredResumes.length > 0 && (
           <motion.div
-              className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm overflow-hidden"
+              className="glass-card overflow-hidden"
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.2 }}

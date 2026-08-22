@@ -47,6 +47,7 @@ export interface SubmitAnswerResponse {
   nextQuestion: InterviewQuestion | null;
   currentIndex: number;
   totalQuestions: number;
+  answeredCount: number;  // 已作答题数（阶段0 起 questionIndex 是唯一 ID 而非序号，进度条应依赖该字段）
 }
 
 export interface CurrentQuestionResponse {
