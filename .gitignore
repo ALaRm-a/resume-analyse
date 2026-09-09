@@ -13,3 +13,27 @@ qodana.yaml
 
 app/src/main/resources/application-dev.yml
 /docs
+
+# IDE / 工具生成的本地数据
+.codebuddy/
+.workbuddy/
+
+# 项目设计文档（暂不纳入版本管理）
+CODEBUDDY.md
+RAG模块/
+VMware迁移计划.md
+reranker计划.md
+模拟面试动态追问-落地实现方案.md
+面试Agent化改造计划.md
+
+# 测试输出与临时文件
+test_output.log
+app/src/test/java/interview/guide/modules/knowledgebase/evaluation/untitled
+
+# 新增未跟踪的测试代码（如确认需要入库，删除以下行即可）
+app/src/test/java/interview/guide/modules/interview/service/InterviewPersistenceServiceTest.java
+app/src/test/java/interview/guide/modules/interview/service/InterviewQuestionServiceTest.java
+app/src/test/java/interview/guide/modules/interview/service/InterviewSessionServiceTest.java
+app/src/test/java/interview/guide/modules/interview/service/ExplicitFollowUpGeneratorTest.java
+app/src/test/java/interview/guide/modules/interview/model/InterviewQuestionDTOTest.java
+app/src/test/java/interview/guide/modules/knowledgebase/service/RagTokenUsageTest.java
