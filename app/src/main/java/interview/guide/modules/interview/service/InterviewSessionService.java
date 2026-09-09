@@ -34,6 +34,10 @@ public class InterviewSessionService {
     private final InterviewSessionCache sessionCache;
     private final ObjectMapper objectMapper;
     private final EvaluateStreamProducer evaluateStreamProducer;
+    private final FollowUpGenerator followUpGenerator;
+
+    /** 每个主问题最多允许的追问数（阶段1 动态追问硬上限常量） */
+    private static final int MAX_FOLLOW_UP_PER_QUESTION = 1;
 
     /**
      * 创建新的面试会话
@@ -69,6 +73,10 @@ public class InterviewSessionService {
             historicalQuestions
         );
 
+        // 动态追问硬上限：用户选择的主问题数 × 2（每主问题最多 MAX_FOLLOW_UP_PER_QUESTION 个追问，阶段1）
+        // 基于用户输入 questionCount 而非实际生成数：LLM/兜底生成可能少于用户选择题数
+        int maxTotalQuestions = request.questionCount() * (MAX_FOLLOW_UP_PER_QUESTION + 1);
+
         // 保存到 Redis 缓存
         sessionCache.saveSession(
             sessionId,
@@ -76,14 +84,15 @@ public class InterviewSessionService {
             request.resumeId(),
             questions,
             0,
-            SessionStatus.CREATED
+            SessionStatus.CREATED,
+            maxTotalQuestions
         );
 
         // 保存到数据库
         if (request.resumeId() != null) {
             try {
                 persistenceService.saveSession(sessionId, request.resumeId(),
-                    questions.size(), questions);
+                    questions.size(), maxTotalQuestions, questions);
             } catch (Exception e) {
                 log.warn("保存面试会话到数据库失败: {}", e.getMessage());
             }
@@ -193,6 +202,11 @@ public class InterviewSessionService {
 
             SessionStatus status = convertStatus(entity.getStatus());
 
+            // 恢复硬上限；存量数据（maxTotalQuestions 为 null）兜底为当前题目数（不再插追问）
+            int maxTotalQuestions = entity.getMaxTotalQuestions() != null
+                ? entity.getMaxTotalQuestions()
+                : questions.size();
+
             // 保存到 Redis 缓存
             sessionCache.saveSession(
                 entity.getSessionId(),
@@ -200,7 +214,8 @@ public class InterviewSessionService {
                 entity.getResume().getId(),
                 questions,
                 entity.getCurrentQuestionIndex(),
-                status
+                status,
+                maxTotalQuestions
             );
 
             log.info("从数据库恢复会话到 Redis: sessionId={}, currentIndex={}, status={}",
@@ -291,8 +306,40 @@ public class InterviewSessionService {
         InterviewQuestionDTO answeredQuestion = question.withAnswer(request.answer());
         questions.set(pos, answeredQuestion);
 
-        // 移动到下一题（游标 = 位置 + 1）
+        // 游标默认推进到列表下一位置
         int newIndex = pos + 1;
+
+        // —— 阶段1：动态追问决策（LLM 在锁外执行，任何异常降级为不追问）——
+        // 硬上限兜底：旧缓存/存量数据无该字段时按当前题数处理（questions.size() < maxTotalQuestions 恒为 false，不追问）
+        int maxTotalQuestions = session.getMaxTotalQuestions() != null
+            ? session.getMaxTotalQuestions() : questions.size();
+        boolean canFollowUp = !answeredQuestion.isFollowUp()
+            && questions.size() < maxTotalQuestions
+            && !hasFollowUpFor(questions, questionId);
+        if (canFollowUp) {
+            try {
+                FollowUpDecision decision = followUpGenerator.decide(
+                    answeredQuestion, request.answer(), session.getResumeText(), request.sessionId());
+                if (decision.shouldFollowUp() && questions.size() < maxTotalQuestions) {
+                    // 追问插入主问题位置 + 1；newIndex 保持 pos+1 不变，
+                    // 因为追问恰好占住该位置，游标天然指向追问（答完追问后游标再 +1 跳到下一主问题）
+                    int maxId = maxQuestionId(questions);
+                    InterviewQuestionDTO followUp = InterviewQuestionDTO.buildFollowUp(
+                        maxId,
+                        decision.followUpQuestion(),
+                        answeredQuestion.type(),
+                        decision.category() != null && !decision.category().isBlank()
+                            ? decision.category() : answeredQuestion.category(),
+                        questionId);
+                    questions.add(pos + 1, followUp);
+                    log.info("会话 {} 为主问题ID{} 生成追问ID{}，已插入位置{}",
+                        request.sessionId(), questionId, followUp.questionIndex(), pos + 1);
+                }
+            } catch (Exception e) {
+                log.warn("动态追问决策失败，降级为不追问: sessionId={}, error={}",
+                    request.sessionId(), e.getMessage());
+            }
+        }
 
         // 检查是否全部完成
         boolean hasNextQuestion = newIndex < questions.size();
@@ -307,15 +354,12 @@ public class InterviewSessionService {
             sessionCache.updateSessionStatus(request.sessionId(), SessionStatus.COMPLETED);
         }
 
-        // 保存答案到数据库（落库锚定问题 ID，而非位置）
+        // 保存到数据库（聚合事务：答案 + 问题列表 + 游标 + 状态，落库锚定问题 ID，一次原子落库）
         try {
-            persistenceService.saveAnswer(
+            persistenceService.saveAnswerAndUpdateSession(
                 request.sessionId(), questionId,
                 question.question(), question.category(),
-                request.answer(), 0, null  // 分数在报告生成时更新
-            );
-            persistenceService.updateCurrentQuestionIndex(request.sessionId(), newIndex);
-            persistenceService.updateSessionStatus(request.sessionId(),
+                request.answer(), newIndex, questions,
                 newStatus == SessionStatus.COMPLETED
                     ? InterviewSessionEntity.SessionStatus.COMPLETED
                     : InterviewSessionEntity.SessionStatus.IN_PROGRESS);
@@ -428,6 +472,21 @@ public class InterviewSessionService {
             }
         }
         return -1;
+    }
+
+    /**
+     * 判断指定主问题是否已存在追问（每主问题最多 MAX_FOLLOW_UP_PER_QUESTION 个追问）
+     */
+    private boolean hasFollowUpFor(List<InterviewQuestionDTO> questions, int parentId) {
+        return questions.stream().anyMatch(q ->
+            q.isFollowUp() && q.parentQuestionIndex() != null && q.parentQuestionIndex() == parentId);
+    }
+
+    /**
+     * 当前问题列表中的最大问题 ID（追问 ID = max + 1，大号区间）
+     */
+    private int maxQuestionId(List<InterviewQuestionDTO> questions) {
+        return questions.stream().mapToInt(InterviewQuestionDTO::questionIndex).max().orElse(0);
     }
 
     /**
