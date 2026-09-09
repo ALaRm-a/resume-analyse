@@ -42,7 +42,7 @@ public class InterviewPersistenceService {
      */
     @Transactional(rollbackFor = Exception.class)
     public InterviewSessionEntity saveSession(String sessionId, Long resumeId, 
-                                              int totalQuestions, 
+                                              int totalQuestions, int maxTotalQuestions,
                                               List<InterviewQuestionDTO> questions) {
         try {
             Optional<ResumeEntity> resumeOpt = resumeRepository.findById(resumeId);
@@ -54,6 +54,7 @@ public class InterviewPersistenceService {
             session.setSessionId(sessionId);
             session.setResume(resumeOpt.get());
             session.setTotalQuestions(totalQuestions);
+            session.setMaxTotalQuestions(maxTotalQuestions);
             session.setCurrentQuestionIndex(0);
             session.setStatus(InterviewSessionEntity.SessionStatus.CREATED);
             session.setQuestionsJson(objectMapper.writeValueAsString(questions));
@@ -105,21 +106,7 @@ public class InterviewPersistenceService {
     }
     
     /**
-     * 更新当前问题索引
-     */
-    @Transactional(rollbackFor = Exception.class)
-    public void updateCurrentQuestionIndex(String sessionId, int index) {
-        Optional<InterviewSessionEntity> sessionOpt = sessionRepository.findBySessionId(sessionId);
-        if (sessionOpt.isPresent()) {
-            InterviewSessionEntity session = sessionOpt.get();
-            session.setCurrentQuestionIndex(index);
-            session.setStatus(InterviewSessionEntity.SessionStatus.IN_PROGRESS);
-            sessionRepository.save(session);
-        }
-    }
-    
-    /**
-     * 保存面试答案
+     * 保存面试答案（暂存用；提交场景走 saveAnswerAndUpdateSession 聚合事务）
      */
     @Transactional(rollbackFor = Exception.class)
     public InterviewAnswerEntity saveAnswer(String sessionId, int questionIndex,
@@ -150,6 +137,54 @@ public class InterviewPersistenceService {
                 sessionId, questionIndex, score);
         
         return saved;
+    }
+
+    /**
+     * 聚合保存（阶段1 动态追问改造 §4.3）：
+     * 一次事务内完成 答案 upsert + 问题列表（JSON/总题数）+ 游标 + 状态 的原子落库。
+     * 同一 session 行只读一次、只写一次，避免重复读改写与状态游离于聚合事务外。
+     * 动态追问插入后必须在此事务内同步 questionsJson 与 totalQuestions，
+     * 否则 Redis 缓存丢失后追问"蒸发"。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void saveAnswerAndUpdateSession(String sessionId, int questionId,
+                                           String question, String category,
+                                           String userAnswer, int currentIndex,
+                                           List<InterviewQuestionDTO> questions,
+                                           InterviewSessionEntity.SessionStatus status) {
+        Optional<InterviewSessionEntity> sessionOpt = sessionRepository.findBySessionId(sessionId);
+        if (sessionOpt.isEmpty()) {
+            throw new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND);
+        }
+        InterviewSessionEntity session = sessionOpt.get();
+
+        // 1. 答案 upsert（按 sessionId + questionId 定位，重复提交幂等，不产生重复答案行）
+        InterviewAnswerEntity answer = answerRepository
+            .findBySession_SessionIdAndQuestionIndex(sessionId, questionId)
+            .orElseGet(() -> {
+                InterviewAnswerEntity created = new InterviewAnswerEntity();
+                created.setSession(session);
+                created.setQuestionIndex(questionId);
+                return created;
+            });
+        answer.setQuestion(question);
+        answer.setCategory(category);
+        answer.setUserAnswer(userAnswer);
+        answer.setScore(0);
+        answer.setFeedback(null);
+        answerRepository.save(answer);
+
+        // 2. 问题列表 + 游标 + 状态 一次合并更新
+        try {
+            session.setQuestionsJson(objectMapper.writeValueAsString(questions));
+            session.setTotalQuestions(questions.size());
+            session.setCurrentQuestionIndex(currentIndex);
+            session.setStatus(status);
+            sessionRepository.save(session);
+        } catch (JacksonException e) {
+            log.error("序列化问题列表失败: {}", e.getMessage(), e);
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "保存会话失败");
+        }
     }
     
     /**

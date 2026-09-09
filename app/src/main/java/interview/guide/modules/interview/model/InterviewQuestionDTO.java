@@ -44,6 +44,19 @@ public record InterviewQuestionDTO(
             Integer parentQuestionIndex) {
         return new InterviewQuestionDTO(index, question, type, category, null, null, null, isFollowUp, parentQuestionIndex);
     }
+
+    /**
+     * 创建追问问题（阶段1 动态追问改造）。
+     * questionIndex = 当前最大 ID + 1（大号区间，永不与主问题小号区间冲突）。
+     *
+     * @param maxId               当前问题列表中的最大 ID
+     * @param parentQuestionIndex 追问关联的主问题 ID
+     */
+    public static InterviewQuestionDTO buildFollowUp(int maxId, String question, QuestionType type,
+                                                     String category, int parentQuestionIndex) {
+        return new InterviewQuestionDTO(
+            maxId + 1, question, type, category, null, null, null, true, parentQuestionIndex);
+    }
     
     /**
      * 添加用户回答

@@ -34,6 +34,9 @@ public class InterviewSessionEntity {
     // 问题总数
     private Integer totalQuestions;
     
+    // 问题总数上限（动态追问硬上限：主问题数 × 2；阶段1 动态追问改造）
+    private Integer maxTotalQuestions;
+    
     // 当前问题索引
     private Integer currentQuestionIndex = 0;
     
@@ -136,6 +139,14 @@ public class InterviewSessionEntity {
     
     public void setCurrentQuestionIndex(Integer currentQuestionIndex) {
         this.currentQuestionIndex = currentQuestionIndex;
+    }
+    
+    public Integer getMaxTotalQuestions() {
+        return maxTotalQuestions;
+    }
+    
+    public void setMaxTotalQuestions(Integer maxTotalQuestions) {
+        this.maxTotalQuestions = maxTotalQuestions;
     }
     
     public SessionStatus getStatus() {

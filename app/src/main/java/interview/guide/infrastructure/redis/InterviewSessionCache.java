@@ -53,18 +53,20 @@ public class InterviewSessionCache {
         private String questionsJson;  // 序列化的问题列表
         private int currentIndex;
         private SessionStatus status;
+        private Integer maxTotalQuestions;  // 问题总数上限（动态追问硬上限；阶段1 动态追问改造）
 
         public CachedSession() {
         }
 
         public CachedSession(String sessionId, String resumeText, Long resumeId,
                             List<InterviewQuestionDTO> questions, int currentIndex,
-                            SessionStatus status, ObjectMapper objectMapper) {
+                            SessionStatus status, Integer maxTotalQuestions, ObjectMapper objectMapper) {
             this.sessionId = sessionId;
             this.resumeText = resumeText;
             this.resumeId = resumeId;
             this.currentIndex = currentIndex;
             this.status = status;
+            this.maxTotalQuestions = maxTotalQuestions;
             try {
                 this.questionsJson = objectMapper.writeValueAsString(questions);
             } catch (JacksonException e) {
@@ -86,10 +88,10 @@ public class InterviewSessionCache {
      */
     public void saveSession(String sessionId, String resumeText, Long resumeId,
                            List<InterviewQuestionDTO> questions, int currentIndex,
-                           SessionStatus status) {
+                           SessionStatus status, Integer maxTotalQuestions) {
         String key = buildSessionKey(sessionId);
         CachedSession cachedSession = new CachedSession(
-            sessionId, resumeText, resumeId, questions, currentIndex, status, objectMapper
+            sessionId, resumeText, resumeId, questions, currentIndex, status, maxTotalQuestions, objectMapper
         );
 
         redisService.set(key, cachedSession, SESSION_TTL);
