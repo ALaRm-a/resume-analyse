@@ -257,7 +257,9 @@ function QuestionCard({
         <div className="flex items-center gap-3">
           <span
               className="w-8 h-8 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-lg flex items-center justify-center text-sm font-semibold">
-            {answer.questionIndex + 1}
+            {/* 题号用列表位置序号（第几道题），不对外暴露内部问题 ID：
+                ID 是内部标识（主问题在低位区间、追问在高位区间），插入追问后会跳号 */}
+            {index + 1}
           </span>
           <span
               className="px-3 py-1 bg-primary-50 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400 text-xs font-medium rounded-full">

@@ -182,6 +182,8 @@ export default function Interview({ resumeText, resumeId, onBack, onInterviewCom
 
       setAnswer('');
       setAnsweredCount(response.answeredCount);
+      // 同步总题数：插入追问后列表会变长，分母不更新会导致进度条满分后继续答题
+      setSession(prev => (prev ? { ...prev, totalQuestions: response.totalQuestions } : prev));
 
       if (response.hasNextQuestion && response.nextQuestion) {
         setCurrentQuestion(response.nextQuestion);
