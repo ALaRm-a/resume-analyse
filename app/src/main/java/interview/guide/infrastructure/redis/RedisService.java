@@ -182,7 +182,11 @@ public class RedisService {
                 try {
                     return operation.execute();
                 } finally {
-                    lock.unlock();
+                    // 防御：operation 执行时间超过 leaseTime 时锁已被 Redisson 自动释放，
+                    // 此时直接 unlock 会抛 IllegalMonitorStateException 掩盖真实结果
+                    if (lock.isHeldByCurrentThread()) {
+                        lock.unlock();
+                    }
                 }
             }
             throw new RuntimeException("获取锁失败: " + lockKey);
