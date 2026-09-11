@@ -5,6 +5,7 @@ import interview.guide.common.exception.ErrorCode;
 import interview.guide.common.model.AsyncTaskStatus;
 import interview.guide.infrastructure.redis.InterviewSessionCache;
 import interview.guide.infrastructure.redis.InterviewSessionCache.CachedSession;
+import interview.guide.infrastructure.redis.RedisService;
 import interview.guide.modules.interview.listener.EvaluateStreamProducer;
 import interview.guide.modules.interview.model.*;
 import interview.guide.modules.interview.model.InterviewSessionDTO.SessionStatus;
@@ -18,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 面试会话管理服务
@@ -32,12 +34,30 @@ public class InterviewSessionService {
     private final AnswerEvaluationService evaluationService;
     private final InterviewPersistenceService persistenceService;
     private final InterviewSessionCache sessionCache;
+    private final RedisService redisService;
     private final ObjectMapper objectMapper;
     private final EvaluateStreamProducer evaluateStreamProducer;
     private final FollowUpGenerator followUpGenerator;
 
     /** 每个主问题最多允许的追问数（阶段1 动态追问硬上限常量） */
     private static final int MAX_FOLLOW_UP_PER_QUESTION = 1;
+
+    /** 会话级分布式锁前缀（阶段2 并发一致性：同一会话的提交/暂存串行化） */
+    private static final String SESSION_LOCK_KEY_PREFIX = "interview:lock:";
+    /** 会话锁获取等待时间（毫秒） */
+    private static final long LOCK_WAIT_MS = 3000;
+    /** 会话锁持有时间（毫秒）：锁内仅做毫秒级读改写，10s 足够兜底异常场景 */
+    private static final long LOCK_LEASE_MS = 10000;
+
+    /**
+     * 提交快照（阶段2）：锁1（快读）捕获的上下文，供锁外 LLM 决策与锁2（写回）校验使用。
+     */
+    private record SubmitSnapshot(
+        int version,
+        boolean canFollowUp,
+        InterviewQuestionDTO question,
+        String resumeText
+    ) {}
 
     /**
      * 创建新的面试会话
@@ -290,143 +310,187 @@ public class InterviewSessionService {
      * 阶段0（动态追问改造）：request.questionIndex() 是唯一 ID 而非列表下标，
      * 必须先通过 ID 定位列表位置 pos，再执行依赖位置的操作（更新答案、游标推进）。
      * 答案落库锚定 ID，游标推进用位置。
+     *
+     * 阶段2（并发一致性）：两段锁——锁内快读（毫秒级）+ 锁外 LLM 决策（3~10s 不持锁）
+     * + 再进锁校验版本号后写回。LLM 决策期间他人提交使版本号变化时，放弃本次追问插入
+     * （不产生重复题），答案幂等落库。
      */
     public SubmitAnswerResponse submitAnswer(SubmitAnswerRequest request) {
-        CachedSession session = getOrRestoreSession(request.sessionId());
-        List<InterviewQuestionDTO> questions = session.getQuestions(objectMapper);
-
+        String sessionId = request.sessionId();
         int questionId = request.questionIndex();
-        int pos = indexOfQuestionById(questions, questionId);
-        if (pos < 0) {
-            throw new BusinessException(ErrorCode.INTERVIEW_QUESTION_NOT_FOUND, "无效的问题ID: " + questionId);
-        }
+        String lockKey = sessionLockKey(sessionId);
 
-        // 更新问题答案（按位置写回）
-        InterviewQuestionDTO question = questions.get(pos);
-        InterviewQuestionDTO answeredQuestion = question.withAnswer(request.answer());
-        questions.set(pos, answeredQuestion);
+        // ① 锁内快读：定位问题、判断是否可能追问、记录版本快照（毫秒级，不阻塞他人提交）
+        SubmitSnapshot snapshot = redisService.executeWithLock(
+            lockKey, LOCK_WAIT_MS, LOCK_LEASE_MS, TimeUnit.MILLISECONDS,
+            () -> {
+                CachedSession session = getOrRestoreSession(sessionId);
+                List<InterviewQuestionDTO> questions = session.getQuestions(objectMapper);
+                int pos = indexOfQuestionById(questions, questionId);
+                if (pos < 0) {
+                    throw new BusinessException(ErrorCode.INTERVIEW_QUESTION_NOT_FOUND, "无效的问题ID: " + questionId);
+                }
+                InterviewQuestionDTO question = questions.get(pos);
+                int maxTotal = maxTotalQuestions(session, questions);
+                boolean canFollowUp = !question.isFollowUp()
+                    && questions.size() < maxTotal
+                    && !hasFollowUpFor(questions, questionId);
+                return new SubmitSnapshot(
+                    session.getVersion(), canFollowUp, question, session.getResumeText());
+            });
 
-        // 游标默认推进到列表下一位置
-        int newIndex = pos + 1;
+        // ② 锁外 LLM 决策（3~10s 不持锁；生成器内部异常 + 服务层双重降级为不追问）
+        FollowUpDecision decision = snapshot.canFollowUp()
+            ? decideFollowUpSafely(snapshot, sessionId, request.answer())
+            : FollowUpDecision.skip();
+        boolean shouldInsert = decision.shouldFollowUp();
 
-        // —— 阶段1：动态追问决策（LLM 在锁外执行，任何异常降级为不追问）——
-        // 硬上限兜底：旧缓存/存量数据无该字段时按当前题数处理（questions.size() < maxTotalQuestions 恒为 false，不追问）
-        int maxTotalQuestions = session.getMaxTotalQuestions() != null
-            ? session.getMaxTotalQuestions() : questions.size();
-        boolean canFollowUp = !answeredQuestion.isFollowUp()
-            && questions.size() < maxTotalQuestions
-            && !hasFollowUpFor(questions, questionId);
-        if (canFollowUp) {
-            try {
-                FollowUpDecision decision = followUpGenerator.decide(
-                    answeredQuestion, request.answer(), session.getResumeText(), request.sessionId());
-                if (decision.shouldFollowUp() && questions.size() < maxTotalQuestions) {
-                    // 追问插入主问题位置 + 1；newIndex 保持 pos+1 不变，
-                    // 因为追问恰好占住该位置，游标天然指向追问（答完追问后游标再 +1 跳到下一主问题）
+        // ③ 再进锁：基于最新列表校验版本后提交（写答案/插追问/推进游标/写回/落库）
+        return redisService.executeWithLock(
+            lockKey, LOCK_WAIT_MS, LOCK_LEASE_MS, TimeUnit.MILLISECONDS,
+            () -> {
+                CachedSession session = sessionCache.getSession(sessionId)
+                    .orElseGet(() -> getOrRestoreSession(sessionId));
+                List<InterviewQuestionDTO> questions = session.getQuestions(objectMapper);
+                int pos = indexOfQuestionById(questions, questionId);
+                if (pos < 0) {
+                    throw new BusinessException(ErrorCode.INTERVIEW_QUESTION_NOT_FOUND, "无效的问题ID: " + questionId);
+                }
+
+                // 并发下他人已提交该题答案（如双击）：幂等跳过写入，返回当前最新状态
+                boolean versionChanged = session.getVersion() != snapshot.version();
+                boolean alreadyAnswered = questions.get(pos).userAnswer() != null;
+                if (versionChanged && alreadyAnswered) {
+                    log.info("会话 {} 问题ID{} 已在并发提交中被作答，本次幂等跳过", sessionId, questionId);
+                    return buildResponse(session, questions);
+                }
+
+                // 更新问题答案（按最新列表中的位置写回）
+                InterviewQuestionDTO question = questions.get(pos);
+                questions.set(pos, question.withAnswer(request.answer()));
+
+                // 游标默认推进到列表下一位置
+                int newIndex = pos + 1;
+                int maxTotal = maxTotalQuestions(session, questions);
+
+                // 追问插入主问题位置 + 1；newIndex 保持 pos+1 不变，
+                // 因为追问恰好占住该位置，游标天然指向追问（答完追问后游标再 +1 跳到下一主问题）
+                if (shouldInsert && !versionChanged && questions.size() < maxTotal) {
                     int maxId = maxQuestionId(questions);
                     InterviewQuestionDTO followUp = InterviewQuestionDTO.buildFollowUp(
                         maxId,
                         decision.followUpQuestion(),
-                        answeredQuestion.type(),
+                        question.type(),
                         decision.category() != null && !decision.category().isBlank()
-                            ? decision.category() : answeredQuestion.category(),
+                            ? decision.category() : question.category(),
                         questionId);
                     questions.add(pos + 1, followUp);
                     log.info("会话 {} 为主问题ID{} 生成追问ID{}，已插入位置{}",
-                        request.sessionId(), questionId, followUp.questionIndex(), pos + 1);
+                        sessionId, questionId, followUp.questionIndex(), pos + 1);
+                } else if (shouldInsert) {
+                    // 决策判定要追问，但写回前被拦下：显式记录原因，避免"追问被静默吞掉"后无从排查
+                    log.warn("会话 {} 放弃插入追问（主问题ID{}）：版本已变更={}，已达上限={}",
+                        sessionId, questionId, versionChanged, questions.size() >= maxTotal);
                 }
-            } catch (Exception e) {
-                log.warn("动态追问决策失败，降级为不追问: sessionId={}, error={}",
-                    request.sessionId(), e.getMessage());
-            }
-        }
 
-        // 检查是否全部完成
-        boolean hasNextQuestion = newIndex < questions.size();
-        InterviewQuestionDTO nextQuestion = hasNextQuestion ? questions.get(newIndex) : null;
+                // 检查是否全部完成
+                boolean hasNextQuestion = newIndex < questions.size();
+                SessionStatus newStatus = hasNextQuestion ? SessionStatus.IN_PROGRESS : SessionStatus.COMPLETED;
 
-        SessionStatus newStatus = hasNextQuestion ? SessionStatus.IN_PROGRESS : SessionStatus.COMPLETED;
+                // ① 先落库（数据库是持久源）：答案 + 问题列表快照 + 游标 + 状态，一次事务原子提交。
+                //    这里不再 catch 吞异常：落库失败必须让本次提交失败、缓存保持旧状态，
+                //    否则会出现"缓存里有追问、库里没有"的不一致（Redis 一过期追问就永久丢失）。
+                //    错误场景区分：业务异常（会话不存在 3001 / 序列化失败）原样穿透保留原错误码；
+                //    其余（DB 连接失败/超时/约束冲突）按"提交答案"动作包装为 3008，
+                //    与全局兜底的"系统繁忙"区分开，前端可据此提示用户重试。
+                try {
+                    persistenceService.saveAnswerAndUpdateSession(
+                        sessionId, questionId,
+                        question.question(), question.category(),
+                        request.answer(), newIndex, questions,
+                        newStatus == SessionStatus.COMPLETED
+                            ? InterviewSessionEntity.SessionStatus.COMPLETED
+                            : InterviewSessionEntity.SessionStatus.IN_PROGRESS);
+                } catch (BusinessException e) {
+                    throw e;
+                } catch (Exception e) {
+                    throw persistenceFailure("提交答案", sessionId, questionId, e);
+                }
 
-        // 更新 Redis 缓存
-        sessionCache.updateQuestions(request.sessionId(), questions);
-        sessionCache.updateCurrentIndex(request.sessionId(), newIndex);
-        if (newStatus == SessionStatus.COMPLETED) {
-            sessionCache.updateSessionStatus(request.sessionId(), SessionStatus.COMPLETED);
-        }
+                // ② 评估只依赖库里的数据，落库成功后即可投递
+                if (!hasNextQuestion) {
+                    persistenceService.updateEvaluateStatus(sessionId, AsyncTaskStatus.PENDING, null);
+                    evaluateStreamProducer.sendEvaluateTask(sessionId);
+                    log.info("会话 {} 已完成所有问题，评估任务已入队", sessionId);
+                }
 
-        // 保存到数据库（聚合事务：答案 + 问题列表 + 游标 + 状态，落库锚定问题 ID，一次原子落库）
-        try {
-            persistenceService.saveAnswerAndUpdateSession(
-                request.sessionId(), questionId,
-                question.question(), question.category(),
-                request.answer(), newIndex, questions,
-                newStatus == SessionStatus.COMPLETED
-                    ? InterviewSessionEntity.SessionStatus.COMPLETED
-                    : InterviewSessionEntity.SessionStatus.IN_PROGRESS);
+                // ③ 最后更新缓存（Redis 是加速层，放在持久化成功之后；版本号 +1）
+                sessionCache.applySessionState(session, questions, newIndex, newStatus);
+                sessionCache.writeBack(sessionId, session);
 
-            // 如果是最后一题，设置评估状态为 PENDING 并触发异步评估
-            if (!hasNextQuestion) {
-                persistenceService.updateEvaluateStatus(request.sessionId(), AsyncTaskStatus.PENDING, null);
-                evaluateStreamProducer.sendEvaluateTask(request.sessionId());
-                log.info("会话 {} 已完成所有问题，评估任务已入队", request.sessionId());
-            }
-        } catch (Exception e) {
-            log.warn("保存答案到数据库失败: {}", e.getMessage());
-        }
+                log.info("会话 {} 提交答案: 问题ID{}, 剩余{}题",
+                    sessionId, questionId, questions.size() - newIndex);
 
-        log.info("会话 {} 提交答案: 问题ID{}, 剩余{}题",
-            request.sessionId(), questionId, questions.size() - newIndex);
-
-        return new SubmitAnswerResponse(
-            hasNextQuestion,
-            nextQuestion,
-            newIndex,
-            questions.size(),
-            newIndex
-        );
+                return new SubmitAnswerResponse(
+                    hasNextQuestion,
+                    questions.size() > newIndex ? questions.get(newIndex) : null,
+                    newIndex,
+                    questions.size(),
+                    newIndex
+                );
+            });
     }
 
     /**
      * 暂存答案（不进入下一题）
      * 阶段0（动态追问改造）：与 submitAnswer 一致，按 ID 定位列表位置，落库锚定 ID。
+     * 阶段2（并发一致性）：暂存同样走会话锁 + 锁内一次写回（版本号 +1）。
      */
     public void saveAnswer(SubmitAnswerRequest request) {
-        CachedSession session = getOrRestoreSession(request.sessionId());
-        List<InterviewQuestionDTO> questions = session.getQuestions(objectMapper);
-
+        String sessionId = request.sessionId();
         int questionId = request.questionIndex();
-        int pos = indexOfQuestionById(questions, questionId);
-        if (pos < 0) {
-            throw new BusinessException(ErrorCode.INTERVIEW_QUESTION_NOT_FOUND, "无效的问题ID: " + questionId);
-        }
+        String lockKey = sessionLockKey(sessionId);
 
-        // 更新问题答案
-        InterviewQuestionDTO question = questions.get(pos);
-        InterviewQuestionDTO answeredQuestion = question.withAnswer(request.answer());
-        questions.set(pos, answeredQuestion);
+        redisService.executeWithLock(lockKey, LOCK_WAIT_MS, LOCK_LEASE_MS, TimeUnit.MILLISECONDS, () -> {
+            CachedSession session = getOrRestoreSession(sessionId);
+            List<InterviewQuestionDTO> questions = session.getQuestions(objectMapper);
 
-        // 更新 Redis 缓存
-        sessionCache.updateQuestions(request.sessionId(), questions);
+            int pos = indexOfQuestionById(questions, questionId);
+            if (pos < 0) {
+                throw new BusinessException(ErrorCode.INTERVIEW_QUESTION_NOT_FOUND, "无效的问题ID: " + questionId);
+            }
 
-        // 更新状态为进行中
-        if (session.getStatus() == SessionStatus.CREATED) {
-            sessionCache.updateSessionStatus(request.sessionId(), SessionStatus.IN_PROGRESS);
-        }
+            // 更新问题答案（按位置写回）
+            InterviewQuestionDTO question = questions.get(pos);
+            questions.set(pos, question.withAnswer(request.answer()));
 
-        // 保存答案到数据库（不更新currentIndex，落库锚定问题 ID）
-        try {
-            persistenceService.saveAnswer(
-                request.sessionId(), questionId,
-                question.question(), question.category(),
-                request.answer(), 0, null
-            );
-            persistenceService.updateSessionStatus(request.sessionId(),
-                InterviewSessionEntity.SessionStatus.IN_PROGRESS);
-        } catch (Exception e) {
-            log.warn("暂存答案到数据库失败: {}", e.getMessage());
-        }
+            // 更新状态为进行中
+            SessionStatus newStatus = session.getStatus() == SessionStatus.CREATED
+                ? SessionStatus.IN_PROGRESS : session.getStatus();
 
-        log.info("会话 {} 暂存答案: 问题ID{}", request.sessionId(), questionId);
+            // ① 先落库（不更新 currentIndex，落库锚定问题 ID）
+            //    错误场景区分同 submitAnswer：业务异常原样穿透，其余按"暂存答案"动作包装为 3008
+            try {
+                persistenceService.saveAnswer(
+                    sessionId, questionId,
+                    question.question(), question.category(),
+                    request.answer(), 0, null
+                );
+                persistenceService.updateSessionStatus(sessionId,
+                    InterviewSessionEntity.SessionStatus.IN_PROGRESS);
+            } catch (BusinessException e) {
+                throw e;
+            } catch (Exception e) {
+                throw persistenceFailure("暂存答案", sessionId, questionId, e);
+            }
+
+            // ② 落库成功后再更新缓存（Redis 是加速层；版本号 +1）
+            sessionCache.applySessionState(session, questions, session.getCurrentIndex(), newStatus);
+            sessionCache.writeBack(sessionId, session);
+
+            log.info("会话 {} 暂存答案: 问题ID{}", sessionId, questionId);
+            return null;
+        });
     }
 
     /**
@@ -487,6 +551,67 @@ public class InterviewSessionService {
      */
     private int maxQuestionId(List<InterviewQuestionDTO> questions) {
         return questions.stream().mapToInt(InterviewQuestionDTO::questionIndex).max().orElse(0);
+    }
+
+    /**
+     * 会话级分布式锁 key（阶段2 并发一致性）
+     */
+    private String sessionLockKey(String sessionId) {
+        return SESSION_LOCK_KEY_PREFIX + sessionId;
+    }
+
+    /**
+     * 锁外安全决策：生成器异常时降级为不追问（服务层兜底，绝不阻塞主答题流）
+     */
+    private FollowUpDecision decideFollowUpSafely(SubmitSnapshot snapshot, String sessionId, String answer) {
+        try {
+            return followUpGenerator.decide(
+                snapshot.question(), answer, snapshot.resumeText(), sessionId);
+        } catch (Exception e) {
+            log.warn("动态追问决策失败，降级为不追问: sessionId={}, error={}", sessionId, e.getMessage());
+            return FollowUpDecision.skip();
+        }
+    }
+
+    /**
+     * 落库失败统一包装（错误场景清晰化）。
+     *
+     * 场景区分：
+     * - BusinessException（会话不存在 3001、序列化失败等）由调用方原样穿透，保留原有明确错误码；
+     * - 其余异常（DB 连接失败、查询超时、约束冲突等 DataAccessException）在此按动作包装为
+     *   INTERVIEW_ANSWER_SAVE_FAILED(3008)，日志带动作/sessionId/questionId，避免与全局兜底的
+     *   "系统繁忙，请稍后重试"混为一谈，前端可据此提示用户重试。
+     *
+     * 安全性：落库发生在缓存写回之前，抛异常时 Redis 仍是旧状态，用户重试不会产生脏数据。
+     *
+     * @param action 动作名（"提交答案" / "暂存答案"），用于区分失败场景
+     */
+    private BusinessException persistenceFailure(String action, String sessionId,
+                                                 Integer questionId, Exception e) {
+        log.error("{}落库失败: sessionId={}, questionId={}", action, sessionId, questionId, e);
+        return new BusinessException(ErrorCode.INTERVIEW_ANSWER_SAVE_FAILED, action + "失败，请重试");
+    }
+
+    /**
+     * 动态追问硬上限；存量/旧缓存无该字段时按当前题数处理（size < max 恒为 false，不追问）
+     */
+    private int maxTotalQuestions(CachedSession session, List<InterviewQuestionDTO> questions) {
+        return session.getMaxTotalQuestions() != null ? session.getMaxTotalQuestions() : questions.size();
+    }
+
+    /**
+     * 由缓存会话当前状态构造响应（阶段2 并发幂等跳过路径使用）
+     */
+    private SubmitAnswerResponse buildResponse(CachedSession session, List<InterviewQuestionDTO> questions) {
+        int currentIndex = session.getCurrentIndex();
+        boolean hasNext = currentIndex < questions.size();
+        return new SubmitAnswerResponse(
+            hasNext,
+            hasNext ? questions.get(currentIndex) : null,
+            currentIndex,
+            questions.size(),
+            currentIndex
+        );
     }
 
     /**
