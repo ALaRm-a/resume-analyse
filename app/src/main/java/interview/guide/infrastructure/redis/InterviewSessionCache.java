@@ -54,6 +54,7 @@ public class InterviewSessionCache {
         private int currentIndex;
         private SessionStatus status;
         private Integer maxTotalQuestions;  // 问题总数上限（动态追问硬上限；阶段1 动态追问改造）
+        private int version;  // 会话版本号（阶段2 并发一致性：每次列表/进度写回 +1，用于并发下乐观校验）
 
         public CachedSession() {
         }
@@ -136,31 +137,28 @@ public class InterviewSessionCache {
     }
 
     /**
-     * 更新当前问题索引
+     * 锁内就地更新会话状态（问题列表 + 游标 + 状态），随后必须调用 writeBack 持久化。
+     * 阶段2（并发一致性）：供会话锁临界区内统一修改后一次性写回，
+     * 替代多个独立的"读-改-写"（避免并发覆盖）。非锁内调用请勿使用。
      */
-    public void updateCurrentIndex(String sessionId, int currentIndex) {
-        getSession(sessionId).ifPresent(session -> {
-            session.setCurrentIndex(currentIndex);
-            String key = buildSessionKey(sessionId);
-            redisService.set(key, session, SESSION_TTL);
-            log.debug("更新会话进度: sessionId={}, currentIndex={}", sessionId, currentIndex);
-        });
+    public void applySessionState(CachedSession session, List<InterviewQuestionDTO> questions,
+                                  int currentIndex, SessionStatus status) {
+        try {
+            session.setQuestionsJson(objectMapper.writeValueAsString(questions));
+        } catch (JacksonException e) {
+            throw new RuntimeException("序列化问题列表失败", e);
+        }
+        session.setCurrentIndex(currentIndex);
+        session.setStatus(status);
     }
 
     /**
-     * 更新问题列表（用于保存答案）
+     * 锁内原子写回并递增版本号。必须在获取会话锁后调用（阶段2 并发一致性）。
      */
-    public void updateQuestions(String sessionId, List<InterviewQuestionDTO> questions) {
-        getSession(sessionId).ifPresent(session -> {
-            try {
-                session.setQuestionsJson(objectMapper.writeValueAsString(questions));
-                String key = buildSessionKey(sessionId);
-                redisService.set(key, session, SESSION_TTL);
-                log.debug("更新会话问题: sessionId={}", sessionId);
-            } catch (JacksonException e) {
-                log.error("序列化问题列表失败", e);
-            }
-        });
+    public void writeBack(String sessionId, CachedSession session) {
+        session.setVersion(session.getVersion() + 1);
+        redisService.set(buildSessionKey(sessionId), session, SESSION_TTL);
+        log.debug("会话已锁内写回: sessionId={}, version={}", sessionId, session.getVersion());
     }
 
     /**
